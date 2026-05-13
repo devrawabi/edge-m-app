@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Video, ResizeMode } from 'expo-av';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -26,6 +26,16 @@ type Props = {
   request: InboxMediaPreviewRequest | null;
   onClose: () => void;
 };
+
+/** expo-video player + view; `key` on caller remounts when `source` URI changes. */
+function InboxResolvedVideoPlayer({ source }: { source: string }) {
+  const player = useVideoPlayer(source, (p) => {
+    p.pause();
+  });
+  return (
+    <VideoView player={player} style={styles.videoFill} nativeControls contentFit="contain" />
+  );
+}
 
 function docKindFromName(name: string): 'pdf' | 'text' | 'sheet' | 'image' | 'video' | 'audio' | 'binary' {
   const l = name.toLowerCase();
@@ -140,7 +150,6 @@ function PreviewVideoAudioBody({
   const [localUri, setLocalUri] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const webSrc = useInboxMediaSource(Platform.OS === 'web' ? mediaUrl : null);
-  const videoRef = useRef<Video | null>(null);
 
   useEffect(() => {
     if (Platform.OS === 'web') return;
@@ -158,9 +167,6 @@ function PreviewVideoAudioBody({
     })();
     return () => {
       cancelled = true;
-      if (Platform.OS !== 'web') {
-        void videoRef.current?.unloadAsync();
-      }
     };
   }, [kind, mediaUrl]);
 
@@ -179,18 +185,7 @@ function PreviewVideoAudioBody({
         </View>
       );
     }
-    return (
-      <Video
-        ref={(r) => {
-          videoRef.current = r;
-        }}
-        source={{ uri: webSrc.uri }}
-        style={styles.videoFill}
-        useNativeControls
-        resizeMode={ResizeMode.CONTAIN}
-        shouldPlay={false}
-      />
-    );
+    return <InboxResolvedVideoPlayer key={webSrc.uri} source={webSrc.uri} />;
   }
 
   if (err) {
@@ -207,18 +202,7 @@ function PreviewVideoAudioBody({
       </View>
     );
   }
-  return (
-    <Video
-      ref={(r) => {
-        videoRef.current = r;
-      }}
-      source={{ uri: localUri }}
-      style={styles.videoFill}
-      useNativeControls
-      resizeMode={ResizeMode.CONTAIN}
-      shouldPlay={false}
-    />
-  );
+  return <InboxResolvedVideoPlayer key={localUri} source={localUri} />;
 }
 
 function PreviewPdfWeb({ blobUrl }: { blobUrl: string }) {
