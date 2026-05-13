@@ -2,14 +2,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Animated,
   FlatList,
   Image,
+  ImageBackground,
   KeyboardAvoidingView,
   Linking,
   Modal,
@@ -26,10 +27,15 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { InboxAttachmentSheet } from '@/components/inbox/InboxAttachmentSheet';
+import { InboxBubbleRichContent } from '@/components/inbox/InboxBubbleRichContent';
+import { InboxFullScreenMediaModal } from '@/components/inbox/InboxFullScreenMediaModal';
 import { useColorScheme } from '@/components/useColorScheme';
 import { getApiBaseUrl } from '@/constants/Config';
 import { useSessionContext } from '@/context/SessionContext';
 import { getInboxUiTheme } from '@/lib/inbox-theme';
+import { parseBubbleCta, parseBubblePoll } from '@/lib/inbox-bubble-extras';
+import { stickerUrlFromServerPath } from '@/lib/sticker-assets';
 import { api } from '@/lib/http';
 import { inboxMergeShouldResort, mapSocketPayloadToInboxMessage, realtimeMessageAlreadyInList } from '@/lib/inbox-realtime';
 import { avatarHueFromId, avatarInitials, formatChatTime, formatMessageDayLabel, stripHtmlPreview } from '@/lib/inbox-format';
@@ -38,6 +44,7 @@ import { sortInboxChatsList } from '@/lib/inbox-sort';
 import { subscribeInboxHeaderNudge } from '@/lib/inbox-header-nudge';
 import { emitSubscribeChat, getActiveSocket } from '@/lib/socketClient';
 import type { InboxChat, InboxListResponse, InboxMessage, MessagesPageResponse } from '@/types/inbox';
+import type { InboxMediaPreviewRequest } from '@/types/inbox-media-preview';
 
 type ListFilter = 'all' | 'unread' | 'flagged';
 type Mailbox = 'active' | 'archived';
@@ -78,6 +85,9 @@ const COMPOSER_QUICK_EMOJIS = [
   '💼',
   '📱',
 ];
+
+/** Same tile as web inbox `url('/wa-wallpaper.png')` + `background-repeat: repeat`. */
+const WA_WALLPAPER = require('@/assets/images/wa-wallpaper.png');
 
 function inferMediaMessageType(mime: string, asDocument: boolean): string {
   if (asDocument) return 'document';
@@ -223,6 +233,9 @@ export function InboxScreen() {
   const [sending, setSending] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [emojiPickerVisible, setEmojiPickerVisible] = useState(false);
+  const [attachSheetVisible, setAttachSheetVisible] = useState(false);
+  const [mediaPreviewVisible, setMediaPreviewVisible] = useState(false);
+  const [mediaPreviewRequest, setMediaPreviewRequest] = useState<InboxMediaPreviewRequest | null>(null);
 
   const resyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mailboxRef = useRef<Mailbox>(mailbox);
@@ -232,6 +245,11 @@ export function InboxScreen() {
 
   useEffect(() => {
     selectedIdRef.current = selectedChat?.id ?? null;
+  }, [selectedChat?.id]);
+
+  useEffect(() => {
+    setMediaPreviewVisible(false);
+    setMediaPreviewRequest(null);
   }, [selectedChat?.id]);
 
   useEffect(() => {
@@ -495,6 +513,16 @@ export function InboxScreen() {
     }
   }, [selectedChat?.id]);
 
+  const openMediaPreview = useCallback((req: InboxMediaPreviewRequest) => {
+    setMediaPreviewRequest(req);
+    setMediaPreviewVisible(true);
+  }, []);
+
+  const closeMediaPreview = useCallback(() => {
+    setMediaPreviewVisible(false);
+    setMediaPreviewRequest(null);
+  }, []);
+
   const onSend = useCallback(async () => {
     const text = composer.trim();
     if (!selectedChat?.id || !text || sending || uploadingFile) return;
@@ -608,27 +636,164 @@ export function InboxScreen() {
     await uploadAndSendMedia({ uri: a.uri, name: a.name, mime, webFile: a.file }, true);
   }, [uploadAndSendMedia]);
 
-  const showAttachMenu = useCallback(() => {
-    const actions = [
-      { label: 'Photo', onPress: () => void pickPhoto() },
-      { label: 'Video', onPress: () => void pickVideo() },
-      { label: 'Document', onPress: () => void pickDocument() },
-    ];
-    if (Platform.OS === 'ios') {
-      ActionSheetIOS.showActionSheetWithOptions(
-        { options: ['Cancel', ...actions.map((x) => x.label)], cancelButtonIndex: 0 },
-        (buttonIndex) => {
-          const a = actions[buttonIndex - 1];
-          if (a) void a.onPress();
-        },
-      );
-    } else {
-      Alert.alert('Attach', 'Choose a file type', [
-        ...actions.map((a) => ({ text: a.label, onPress: () => void a.onPress() })),
-        { text: 'Cancel', style: 'cancel' },
-      ]);
+  const finalizeStickerOutbound = useCallback(
+    async (mediaId: string) => {
+      if (!selectedChat?.id) {
+        throw new Error('Open a conversation first.');
+      }
+      setSending(true);
+      try {
+        const msgRes = await api().post('/api/messages', {
+          contactId: selectedChat.id,
+          content: ' ',
+          type: 'sticker',
+          mediaId,
+          filename: 'sticker.webp',
+        });
+        if (msgRes.status >= 400) {
+          const err =
+            typeof (msgRes.data as { error?: string })?.error === 'string'
+              ? (msgRes.data as { error: string }).error
+              : `HTTP ${msgRes.status}`;
+          throw new Error(err);
+        }
+        setComposer('');
+        await refreshThreadMessages();
+      } finally {
+        setSending(false);
+      }
+    },
+    [selectedChat?.id, refreshThreadMessages],
+  );
+
+  const pickStickerForStickerUpload = useCallback(async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Sticker', 'Permission is required to pick an image.');
+      return;
     }
-  }, [pickPhoto, pickVideo, pickDocument]);
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.9,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const a = result.assets[0];
+    const mime = a.mimeType || 'image/jpeg';
+    const name = a.fileName || `sticker_${Date.now()}.jpg`;
+
+    if (!selectedChat?.id || uploadingFile || sending) return;
+    setUploadingFile(true);
+    try {
+      const form = new FormData();
+      if (Platform.OS === 'web') {
+        const blobRes = await fetch(a.uri);
+        const blob = await blobRes.blob();
+        form.append('file', blob, name);
+      } else {
+        form.append('file', { uri: a.uri, name, type: mime } as unknown as Blob);
+      }
+      const res = await api().post('/api/media/sticker-upload', form);
+      if (res.status >= 400) {
+        const err =
+          typeof (res.data as { error?: string })?.error === 'string'
+            ? (res.data as { error: string }).error
+            : `HTTP ${res.status}`;
+        throw new Error(err);
+      }
+      const data = res.data as { id?: string; media_id?: string };
+      const mediaId = data?.id ?? data?.media_id;
+      if (!mediaId || typeof mediaId !== 'string') {
+        throw new Error('Sticker upload did not return a media id');
+      }
+      await finalizeStickerOutbound(mediaId);
+    } catch (e) {
+      Alert.alert('Sticker', e instanceof Error ? e.message : 'Could not send sticker');
+    } finally {
+      setUploadingFile(false);
+    }
+  }, [selectedChat?.id, uploadingFile, sending, finalizeStickerOutbound]);
+
+  const sendStickerFromLibraryPath = useCallback(
+    async (relPath: string) => {
+      if (!selectedChat?.id || uploadingFile || sending) return;
+      const filename = relPath.split('/').pop() || 'sticker.webp';
+      const ext = filename.split('.').pop()?.toLowerCase() || 'webp';
+      const mime =
+        ext === 'png'
+          ? 'image/png'
+          : ext === 'jpg' || ext === 'jpeg'
+            ? 'image/jpeg'
+            : ext === 'gif'
+              ? 'image/gif'
+              : ext === 'svg'
+                ? 'image/svg+xml'
+                : 'image/webp';
+      const assetUrl = stickerUrlFromServerPath(relPath);
+
+      setUploadingFile(true);
+      try {
+        const form = new FormData();
+        if (Platform.OS === 'web') {
+          const res = await api().get(`/api/stickers/raw?path=${encodeURIComponent(relPath)}`, {
+            responseType: 'blob',
+          });
+          if (res.status >= 400) {
+            let msg = `HTTP ${res.status}`;
+            if (res.data instanceof Blob && res.data.size < 8000 && res.data.type.includes('json')) {
+              try {
+                const txt = await (res.data as Blob).text();
+                const parsed = JSON.parse(txt) as { error?: string };
+                if (typeof parsed.error === 'string') msg = parsed.error;
+              } catch {
+                /* ignore */
+              }
+            }
+            throw new Error(msg);
+          }
+          const blob = res.data as Blob;
+          if (!(blob instanceof Blob)) {
+            throw new Error('Sticker download returned no data.');
+          }
+          form.append('file', blob, filename);
+        } else {
+          const safeName = filename.replace(/[^\w.-]/g, '_');
+          const dir = FileSystem.cacheDirectory;
+          if (!dir) throw new Error('Cache directory not available.');
+          const dest = `${dir}lib_stk_${Date.now()}_${safeName}`;
+          const dl = await FileSystem.downloadAsync(assetUrl, dest);
+          form.append(
+            'file',
+            { uri: dl.uri, name: filename, type: mime } as unknown as Blob,
+          );
+        }
+        const res = await api().post('/api/media/sticker-upload', form);
+        if (res.status >= 400) {
+          const err =
+            typeof (res.data as { error?: string })?.error === 'string'
+              ? (res.data as { error: string }).error
+              : `HTTP ${res.status}`;
+          throw new Error(err);
+        }
+        const data = res.data as { id?: string; media_id?: string };
+        const mediaId = data?.id ?? data?.media_id;
+        if (!mediaId || typeof mediaId !== 'string') {
+          throw new Error('Sticker upload did not return a media id');
+        }
+        await finalizeStickerOutbound(mediaId);
+      } catch (e) {
+        Alert.alert('Sticker', e instanceof Error ? e.message : 'Could not send sticker');
+        throw e;
+      } finally {
+        setUploadingFile(false);
+      }
+    },
+    [selectedChat?.id, uploadingFile, sending, finalizeStickerOutbound],
+  );
+
+  const openAttachmentSheet = useCallback(() => {
+    setEmojiPickerVisible(false);
+    setAttachSheetVisible(true);
+  }, []);
 
   const openDialer = useCallback((phone: string) => {
     const digits = phone.replace(/\D/g, '');
@@ -790,74 +955,127 @@ export function InboxScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
         >
-          {loadingMessages ? (
-            <View style={styles.threadLoading}>
-              <ActivityIndicator color={t.threadLoadingDot} />
-            </View>
-          ) : (
-            <FlatList
-              data={displayMessages}
-              inverted
-              keyExtractor={(item) => item.id}
-              contentContainerStyle={styles.msgListPad}
-              onEndReached={() => void loadOlderMessages()}
-              onEndReachedThreshold={0.15}
-              ListFooterComponent={
-                loadingOlder ? (
-                  <View style={styles.olderPad}>
-                    <ActivityIndicator color={t.olderLoadingDot} />
-                  </View>
-                ) : null
-              }
-              renderItem={({ item: m, index }) => {
-                const d = new Date(m.time);
-                const prev = displayMessages[index + 1];
-                const prevD = prev ? new Date(prev.time) : null;
-                const showDay =
-                  !prevD ||
-                  Number.isNaN(prevD.getTime()) ||
-                  d.toDateString() !== prevD.toDateString();
-                return (
-                  <View>
-                    {showDay ? (
-                      <View style={styles.dayPillWrap}>
-                        <View style={[styles.dayPill, { backgroundColor: t.dayPillBg }]}>
-                          <Text style={[styles.dayPillText, { color: t.dayPillText }]}>{formatMessageDayLabel(d)}</Text>
+          <ImageBackground source={WA_WALLPAPER} style={styles.threadMessageBg} resizeMode="repeat">
+            {loadingMessages ? (
+              <View style={styles.threadLoading}>
+                <ActivityIndicator color={t.threadLoadingDot} />
+              </View>
+            ) : (
+              <FlatList
+                data={displayMessages}
+                inverted
+                style={styles.threadMessageList}
+                keyExtractor={(item) => item.id}
+                contentContainerStyle={styles.msgListPad}
+                onEndReached={() => void loadOlderMessages()}
+                onEndReachedThreshold={0.15}
+                ListFooterComponent={
+                  loadingOlder ? (
+                    <View style={styles.olderPad}>
+                      <ActivityIndicator color={t.olderLoadingDot} />
+                    </View>
+                  ) : null
+                }
+                renderItem={({ item: m, index }) => {
+                  const d = new Date(m.time);
+                  const prev = displayMessages[index + 1];
+                  const prevD = prev ? new Date(prev.time) : null;
+                  const showDay =
+                    !prevD ||
+                    Number.isNaN(prevD.getTime()) ||
+                    d.toDateString() !== prevD.toDateString();
+                  const bubbleCta = parseBubbleCta(m.metadata);
+                  const pollParsed =
+                    !bubbleCta && String(m.type || '').toUpperCase() === 'POLL'
+                      ? parseBubblePoll(m.metadata, m.text || '')
+                      : null;
+                  const pollBorder = m.sent ? 'rgba(11,20,26,0.16)' : 'rgba(11,20,26,0.1)';
+                  const bubbleDividerTone = m.sent ? 'rgba(11,20,26,0.14)' : 'rgba(11,20,26,0.1)';
+                  return (
+                    <View>
+                      {showDay ? (
+                        <View style={styles.dayPillWrap}>
+                          <View style={[styles.dayPill, { backgroundColor: t.dayPillBg }]}>
+                            <Text style={[styles.dayPillText, { color: t.dayPillText }]}>{formatMessageDayLabel(d)}</Text>
+                          </View>
                         </View>
-                      </View>
-                    ) : null}
-                    <View style={[styles.bubbleRow, m.sent ? styles.bubbleRowOut : styles.bubbleRowIn]}>
-                      <View
-                        style={[
-                          styles.bubble,
-                          m.sent
-                            ? [styles.bubbleOut, { backgroundColor: t.bubbleOut }]
-                            : [styles.bubbleIn, { backgroundColor: t.bubbleIn }],
-                        ]}
-                      >
-                        {m.mediaUrl ? <Text style={[styles.mediaHint, { color: t.mediaHint }]}>[Media]</Text> : null}
-                        <LinkifiedWhatsAppBubbleText
-                          messageId={m.id}
-                          rawHtml={m.text || ''}
-                          sent={!!m.sent}
-                          palette={waBubblePalette}
-                          style={styles.bubbleText}
-                        />
-                        <View style={styles.metaRow}>
-                          <Text style={[styles.timeSmall, { color: t.timeSmall }]}>
-                            {new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                          </Text>
-                          {m.sent ? (
-                            <Text style={[styles.tickSmall, { color: t.tickSmall }]}> {statusTicks(m.status, m.sent)}</Text>
+                      ) : null}
+                      <View style={[styles.bubbleRow, m.sent ? styles.bubbleRowOut : styles.bubbleRowIn]}>
+                        <View
+                          style={[
+                            styles.bubble,
+                            m.sent
+                              ? [styles.bubbleOut, { backgroundColor: t.bubbleOut }]
+                              : [styles.bubbleIn, { backgroundColor: t.bubbleIn }],
+                          ]}
+                        >
+                          {pollParsed ? (
+                            <>
+                              <LinkifiedWhatsAppBubbleText
+                                messageId={m.id}
+                                rawHtml={pollParsed.question}
+                                sent={!!m.sent}
+                                palette={waBubblePalette}
+                                style={styles.bubbleText}
+                              />
+                              <View style={styles.pollOptionsWrap}>
+                                {pollParsed.options.map((opt) => (
+                                  <View
+                                    key={`${m.id}-${opt}`}
+                                    style={[styles.pollOptionRow, { borderColor: pollBorder }]}
+                                  >
+                                    <Text style={[styles.pollOptionText, { color: t.bubbleText }]}>{opt}</Text>
+                                  </View>
+                                ))}
+                              </View>
+                            </>
+                          ) : (
+                            <InboxBubbleRichContent
+                              message={m}
+                              waBubblePalette={waBubblePalette}
+                              bubbleTextStyle={styles.bubbleText}
+                              bubbleTextColor={t.bubbleText}
+                              mediaHintColor={t.mediaHint}
+                              onOpenMediaPreview={openMediaPreview}
+                            />
+                          )}
+                          {bubbleCta ? (
+                            <>
+                              <View
+                                style={[styles.bubbleDivider, { backgroundColor: bubbleDividerTone }]}
+                              />
+                              <Pressable
+                                accessibilityRole="button"
+                                accessibilityLabel={bubbleCta.label}
+                                onPress={() => void Linking.openURL(bubbleCta.url)}
+                                style={({ pressed }) => [styles.bubbleCtaRow, pressed && { opacity: 0.78 }]}
+                              >
+                                <Text
+                                  style={[styles.bubbleCtaLabel, { color: t.mediaHint }]}
+                                  numberOfLines={2}
+                                >
+                                  {bubbleCta.label}
+                                </Text>
+                                <Ionicons name="open-outline" size={17} color={t.mediaHint} />
+                              </Pressable>
+                            </>
                           ) : null}
+                          <View style={styles.metaRow}>
+                            <Text style={[styles.timeSmall, { color: t.timeSmall }]}>
+                              {new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </Text>
+                            {m.sent ? (
+                              <Text style={[styles.tickSmall, { color: t.tickSmall }]}> {statusTicks(m.status, m.sent)}</Text>
+                            ) : null}
+                          </View>
                         </View>
                       </View>
                     </View>
-                  </View>
-                );
-              }}
-            />
-          )}
+                  );
+                }}
+              />
+            )}
+          </ImageBackground>
 
           <View
             style={[
@@ -900,7 +1118,7 @@ export function InboxScreen() {
                     accessibilityRole="button"
                     accessibilityLabel="Attach file"
                     hitSlop={8}
-                    onPress={() => showAttachMenu()}
+                    onPress={() => openAttachmentSheet()}
                     disabled={uploadingFile || sending}
                     style={({ pressed }) => [
                       styles.composerToolBtn,
@@ -1012,6 +1230,33 @@ export function InboxScreen() {
             </View>
           </Pressable>
         </Modal>
+
+        <InboxAttachmentSheet
+          visible={attachSheetVisible}
+          onClose={() => setAttachSheetVisible(false)}
+          safeBottom={insets.bottom}
+          theme={{
+            composerStripBg: t.composerStripBg,
+            composerStripBorderTop: t.composerStripBorderTop,
+            threadTitle: t.threadTitle,
+            mediaHint: t.mediaHint,
+          }}
+          blocked={uploadingFile || sending}
+          selectedChatId={selectedChat.id}
+          refreshMessages={refreshThreadMessages}
+          setComposerText={setComposer}
+          onPickPhotos={pickPhoto}
+          onPickVideos={pickVideo}
+          onPickDocuments={pickDocument}
+          onPickSticker={pickStickerForStickerUpload}
+          onSendStickerFromLibrary={sendStickerFromLibraryPath}
+        />
+
+        <InboxFullScreenMediaModal
+          visible={mediaPreviewVisible}
+          request={mediaPreviewRequest}
+          onClose={closeMediaPreview}
+        />
       </SafeAreaView>
     );
   }
@@ -1484,6 +1729,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   threadFlex: { flex: 1 },
+  threadMessageBg: {
+    flex: 1,
+    width: '100%',
+  },
+  threadMessageList: {
+    flex: 1,
+    backgroundColor: 'transparent',
+  },
   threadLoading: {
     flex: 1,
     alignItems: 'center',
@@ -1526,10 +1779,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 20,
   },
-  mediaHint: {
-    fontSize: 12,
-    marginBottom: 4,
-  },
   metaRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
@@ -1541,6 +1790,45 @@ const styles = StyleSheet.create({
   },
   tickSmall: {
     fontSize: 11,
+  },
+  bubbleDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginTop: 8,
+    marginBottom: 2,
+    marginHorizontal: -10,
+  },
+  bubbleCtaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingTop: 6,
+    paddingBottom: 2,
+    marginHorizontal: -10,
+    paddingHorizontal: 10,
+  },
+  bubbleCtaLabel: {
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '600',
+    flexShrink: 1,
+    textAlign: 'center',
+  },
+  pollOptionsWrap: {
+    marginTop: 4,
+    gap: 6,
+  },
+  pollOptionRow: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  pollOptionText: {
+    fontSize: 14,
+    lineHeight: 18,
+    textAlign: 'center',
+    fontWeight: '500',
   },
   composerStrip: {
     borderTopWidth: StyleSheet.hairlineWidth,
