@@ -6,6 +6,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -39,6 +40,15 @@ export default function TabLayout() {
   const session = useSessionContext();
   const router = useRouter();
   const [sidebarVisible, setSidebarVisible] = React.useState(false);
+  const logoutFg = isDark ? '#f87171' : '#dc2626';
+
+  const onLogout = React.useCallback(() => {
+    setSidebarVisible(false);
+    void (async () => {
+      await session.signOutLocal();
+      router.replace('/login');
+    })();
+  }, [router, session]);
 
   /** Paths omit the `(tabs)` group — same URLs as `<Redirect href="/" />` after login. */
   const toolItems: { route: Href; title: string; icon: keyof typeof Ionicons.glyphMap }[] = [
@@ -226,7 +236,12 @@ export default function TabLayout() {
               </TouchableOpacity>
             </View>
 
-            <View style={styles.sidebarList}>
+            <ScrollView
+              style={styles.sidebarScroll}
+              contentContainerStyle={styles.sidebarList}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
               {toolItems.map((item) => (
                 <Pressable
                   key={item.title}
@@ -246,7 +261,20 @@ export default function TabLayout() {
                   <Text style={[styles.sidebarItemText, { color: sidebarFg }]}>{item.title}</Text>
                 </Pressable>
               ))}
-            </View>
+            </ScrollView>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Log out"
+              style={({ pressed }) => [
+                styles.sidebarLogout,
+                pressed && { backgroundColor: sidebarItemPressed },
+              ]}
+              onPress={onLogout}
+            >
+              <Ionicons name="log-out-outline" size={18} color={logoutFg} />
+              <Text style={[styles.sidebarLogoutText, { color: logoutFg }]}>Log out</Text>
+            </Pressable>
           </Pressable>
         </Pressable>
       </Modal>
@@ -273,6 +301,12 @@ const styles = StyleSheet.create({
     borderRightWidth: 1,
     paddingTop: 56,
     paddingHorizontal: 14,
+    paddingBottom: 24,
+    flexDirection: 'column',
+  },
+  sidebarScroll: {
+    flex: 1,
+    minHeight: 0,
   },
   sidebarHeader: {
     flexDirection: 'row',
@@ -289,6 +323,22 @@ const styles = StyleSheet.create({
   },
   sidebarList: {
     gap: 4,
+    paddingBottom: 8,
+  },
+  sidebarLogout: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(148, 163, 184, 0.35)',
+  },
+  sidebarLogoutText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   sidebarItem: {
     flexDirection: 'row',

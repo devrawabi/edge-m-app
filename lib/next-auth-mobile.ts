@@ -135,7 +135,16 @@ export async function signInCredentials(
   }
 }
 
+/**
+ * Loads `/api/me` for `companyId` and app fields. Skips that request when there is no session user
+ * so cold loads (logged out) do not hit `/api/me` and avoid a 401 in the browser Network/console.
+ */
 export async function fetchMeProfile(): Promise<MobileUserMe> {
+  const sessionRes = await api().get('/api/auth/session');
+  if (!sessionRes.data?.user) {
+    await persistJar({});
+    throw new Error('Unauthorized');
+  }
   const res = await api().get('/api/me');
   if (res.status === 401) {
     await persistJar({});
