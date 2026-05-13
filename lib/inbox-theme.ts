@@ -1,0 +1,184 @@
+export type InboxUiTheme = {
+  listBg: string;
+  rowMuted: string;
+  rowHi: string;
+  searchWrapBg: string;
+  searchWrapBorder?: string;
+  filterChipBg: string;
+  filterChipOnBg: string;
+  filterChipText: string;
+  filterChipTextOn: string;
+  chatRowPressed: string;
+  emptyList: string;
+  fetchingLabel: string;
+  navHeaderPrimary: string;
+  navHeaderSecondary: string;
+  navHeaderIcon: string;
+  searchIcon: string;
+  threadWallpaper: string;
+  threadTopBar: string;
+  threadTopBarBorder: string;
+  threadBackIcon: string;
+  threadTitle: string;
+  threadSub: string;
+  threadCallIcon: string;
+  threadLoadingDot: string;
+  olderLoadingDot: string;
+  dayPillBg: string;
+  dayPillText: string;
+  bubbleIn: string;
+  bubbleOut: string;
+  bubbleText: string;
+  mediaHint: string;
+  timeSmall: string;
+  tickSmall: string;
+  composerBar: string;
+  composerBarBorder: string;
+  composerInput: string;
+  /** Hairline around the message field pill (WhatsApp-style). */
+  composerInputBorder: string;
+  /** Circular + / mic buttons on the composer bar. */
+  composerCircleBg: string;
+  composerCircleIcon: string;
+  composerPlaceholder: string;
+  composerText: string;
+  unreadBadgeText: string;
+  refreshTint: string;
+  /** Hairline between chat rows */
+  chatDivider: string;
+  /** Under filter strip (with shadow) */
+  filterBarBorderBottom: string;
+  filterBarShadowOpacity: number;
+  /** Web inbox–style thread composer: outer strip (`bg-white border-t border-gray-100`). */
+  composerStripBg: string;
+  composerStripBorderTop: string;
+  /** Inner well (`bg-gray-50 rounded-xl`). */
+  composerWellBg: string;
+  composerWellBorder: string;
+  composerToolIcon: string;
+  composerToolIconActive: string;
+  composerMicBtnBg: string;
+  composerMicBtnIcon: string;
+  composerSendBtnBg: string;
+  composerSendBtnIcon: string;
+};
+
+export function getInboxUiTheme(isDark: boolean): InboxUiTheme {
+  if (isDark) {
+    return {
+      listBg: '#0f172a',
+      rowMuted: '#9ca3af',
+      rowHi: '#f8fafc',
+      searchWrapBg: 'rgba(255,255,255,0.08)',
+      filterChipBg: 'rgba(255,255,255,0.06)',
+      filterChipOnBg: 'rgba(37, 211, 102, 0.15)',
+      filterChipText: '#9ca3af',
+      filterChipTextOn: '#25d366',
+      chatRowPressed: 'rgba(255,255,255,0.08)',
+      emptyList: '#9ca3af',
+      fetchingLabel: '#9ca3af',
+      navHeaderPrimary: '#f8fafc',
+      navHeaderSecondary: '#94a3b8',
+      navHeaderIcon: '#f8fafc',
+      searchIcon: '#94a3b8',
+      threadWallpaper: '#0b141a',
+      threadTopBar: '#111921',
+      threadTopBarBorder: 'rgba(255,255,255,0.1)',
+      threadBackIcon: '#e2e8f0',
+      threadTitle: '#f8fafc',
+      threadSub: '#94a3b8',
+      threadCallIcon: '#25d366',
+      threadLoadingDot: '#25d366',
+      olderLoadingDot: '#94a3b8',
+      dayPillBg: 'rgba(255,255,255,0.1)',
+      dayPillText: '#aebac1',
+      bubbleIn: '#2a3942',
+      bubbleOut: '#005c4b',
+      bubbleText: '#e9edef',
+      mediaHint: '#53bdeb',
+      timeSmall: '#8696a0',
+      tickSmall: '#53bdeb',
+      composerBar: '#1f2c34',
+      composerBarBorder: '#2a3942',
+      composerInput: '#2a3942',
+      composerInputBorder: 'rgba(255,255,255,0.08)',
+      composerCircleBg: '#2a3942',
+      composerCircleIcon: '#aebac1',
+      composerPlaceholder: '#8696a0',
+      composerText: '#e9edef',
+      unreadBadgeText: '#0f172a',
+      refreshTint: '#25d366',
+      chatDivider: 'rgba(255,255,255,0.12)',
+      filterBarBorderBottom: 'rgba(255,255,255,0.1)',
+      filterBarShadowOpacity: 0.45,
+      composerStripBg: '#111921',
+      composerStripBorderTop: 'rgba(255,255,255,0.08)',
+      composerWellBg: '#1e293b',
+      composerWellBorder: 'rgba(255,255,255,0.06)',
+      composerToolIcon: '#94a3b8',
+      composerToolIconActive: '#25d366',
+      composerMicBtnBg: '#334155',
+      composerMicBtnIcon: '#94a3b8',
+      composerSendBtnBg: '#25d366',
+      composerSendBtnIcon: '#0b141a',
+    };
+  }
+  return {
+    listBg: '#ffffff',
+    rowMuted: '#64748b',
+    rowHi: '#0f172a',
+    searchWrapBg: '#f1f5f9',
+    searchWrapBorder: '#e2e8f0',
+    filterChipBg: '#e8edf3',
+    filterChipOnBg: 'rgba(37, 211, 102, 0.18)',
+    filterChipText: '#64748b',
+    filterChipTextOn: '#15803d',
+    chatRowPressed: '#e2e8f0',
+    emptyList: '#64748b',
+    fetchingLabel: '#64748b',
+    navHeaderPrimary: '#0f172a',
+    navHeaderSecondary: '#64748b',
+    navHeaderIcon: '#0f172a',
+    searchIcon: '#64748b',
+    threadWallpaper: '#ece5dd',
+    threadTopBar: '#f8fafc',
+    threadTopBarBorder: '#e2e8f0',
+    threadBackIcon: '#0f172a',
+    threadTitle: '#0f172a',
+    threadSub: '#64748b',
+    threadCallIcon: '#25d366',
+    threadLoadingDot: '#075e54',
+    olderLoadingDot: '#54656f',
+    dayPillBg: 'rgba(0,0,0,0.06)',
+    dayPillText: '#54656f',
+    bubbleIn: '#ffffff',
+    bubbleOut: '#d9fdd3',
+    bubbleText: '#111b21',
+    mediaHint: '#027eb5',
+    timeSmall: '#667781',
+    tickSmall: '#53bdeb',
+    composerBar: '#f0f2f5',
+    composerBarBorder: '#d1d7db',
+    composerInput: '#ffffff',
+    composerInputBorder: '#e9edef',
+    composerCircleBg: '#ffffff',
+    composerCircleIcon: '#54656f',
+    composerPlaceholder: '#8696a0',
+    composerText: '#111b21',
+    unreadBadgeText: '#0b141a',
+    refreshTint: '#25d366',
+    chatDivider: '#e2e8f0',
+    filterBarBorderBottom: '#e2e8f0',
+    filterBarShadowOpacity: 0.12,
+    composerStripBg: '#ffffff',
+    composerStripBorderTop: '#f3f4f6',
+    composerWellBg: '#f9fafb',
+    composerWellBorder: '#e5e7eb',
+    composerToolIcon: '#9ca3af',
+    composerToolIconActive: '#25d366',
+    composerMicBtnBg: '#f3f4f6',
+    composerMicBtnIcon: '#6b7280',
+    composerSendBtnBg: '#25d366',
+    composerSendBtnIcon: '#0b141a',
+  };
+}
