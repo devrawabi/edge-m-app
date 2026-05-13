@@ -32,6 +32,7 @@ import type { InboxMediaPreviewRequest } from '@/types/inbox-media-preview';
 
 type Props = {
   message: InboxMessage;
+  sent: boolean;
   waBubblePalette: WhatsAppBubblePalette;
   bubbleTextStyle: object;
   bubbleTextColor: string;
@@ -39,10 +40,18 @@ type Props = {
   onOpenMediaPreview?: (req: InboxMediaPreviewRequest) => void;
 };
 
-function MediaPreviewTarget({ children, onOpen }: { children: React.ReactNode; onOpen?: () => void }) {
+function MediaPreviewTarget({
+  sent,
+  children,
+  onOpen,
+}: {
+  sent: boolean;
+  children: React.ReactNode;
+  onOpen?: () => void;
+}) {
   if (!onOpen) return <>{children}</>;
   return (
-    <Pressable onPress={onOpen} style={styles.previewTap}>
+    <Pressable onPress={onOpen} style={[styles.previewTap, { alignSelf: sent ? 'flex-end' : 'flex-start' }]}>
       {children}
       <View pointerEvents="none" style={styles.expandFab}>
         <Ionicons name="expand-outline" size={15} color="#fff" />
@@ -245,6 +254,7 @@ function NativeMediaOpenRow({
       disabled={busy}
       style={({ pressed }) => [
         styles.mediaOpenRow,
+        { alignSelf: sent ? 'flex-end' : 'flex-start' },
         {
           backgroundColor: sent ? 'rgba(255,255,255,0.12)' : 'rgba(15,23,42,0.06)',
           opacity: pressed || busy ? 0.82 : 1,
@@ -269,6 +279,7 @@ function NativeMediaOpenRow({
 
 export function InboxBubbleRichContent({
   message: m,
+  sent,
   waBubblePalette,
   bubbleTextStyle,
   bubbleTextColor,
@@ -291,11 +302,12 @@ export function InboxBubbleRichContent({
   ) : null;
 
   const maxW = 260;
+  const blockRoot = [styles.block, sent ? styles.blockOutgoing : styles.blockIncoming];
 
   if (upper === 'IMAGE') {
     if (!m.mediaUrl) {
       return (
-        <View style={styles.block}>
+        <View style={blockRoot}>
           {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
           {quoted}
           <View style={styles.typePlaceholderRow}>
@@ -308,10 +320,11 @@ export function InboxBubbleRichContent({
     }
     const mediaId = m.mediaUrl;
     return (
-      <View style={styles.block}>
+      <View style={blockRoot}>
         {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
         {quoted}
         <MediaPreviewTarget
+          sent={sent}
           onOpen={
             onOpenMediaPreview && mediaId
               ? () => onOpenMediaPreview({ kind: 'image', mediaUrl: mediaId })
@@ -334,7 +347,7 @@ export function InboxBubbleRichContent({
   if (upper === 'STICKER') {
     if (!m.mediaUrl) {
       return (
-        <View style={styles.block}>
+        <View style={blockRoot}>
           {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
           {quoted}
           <View style={styles.typePlaceholderRow}>
@@ -347,25 +360,17 @@ export function InboxBubbleRichContent({
     }
     const stickerId = m.mediaUrl;
     return (
-      <View style={styles.block}>
+      <View style={blockRoot}>
         {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
         {quoted}
         <View style={styles.stickerWrap}>
-          <MediaPreviewTarget
-            onOpen={
-              onOpenMediaPreview && stickerId
-                ? () => onOpenMediaPreview({ kind: 'sticker', mediaUrl: stickerId })
-                : undefined
-            }
-          >
-            <InboxAuthenticatedImage
-              mediaUrl={stickerId}
-              width={128}
-              height={128}
-              borderRadius={8}
-              resizeMode="contain"
-            />
-          </MediaPreviewTarget>
+          <InboxAuthenticatedImage
+            mediaUrl={stickerId}
+            width={128}
+            height={128}
+            borderRadius={8}
+            resizeMode="contain"
+          />
         </View>
         {caption}
       </View>
@@ -375,7 +380,7 @@ export function InboxBubbleRichContent({
   if (upper === 'VIDEO') {
     if (!m.mediaUrl) {
       return (
-        <View style={styles.block}>
+        <View style={blockRoot}>
           {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
           {quoted}
           <View style={styles.typePlaceholderRow}>
@@ -388,11 +393,11 @@ export function InboxBubbleRichContent({
     }
     const videoId = m.mediaUrl;
     return (
-      <View style={styles.block}>
+      <View style={blockRoot}>
         {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
         {quoted}
         {Platform.OS === 'web' ? (
-          <View style={styles.videoWebOuter}>
+          <View style={[styles.videoWebOuter, { alignSelf: sent ? 'flex-end' : 'flex-start' }]}>
             <View style={styles.videoWebWrap}>
               <InboxWebVideoOrAudio kind="video" mediaUrl={videoId} maxWidth={maxW} />
             </View>
@@ -413,7 +418,7 @@ export function InboxBubbleRichContent({
             subtitle={onOpenMediaPreview ? 'Tap for fullscreen' : 'Tap to download / open'}
             mediaUrl={videoId}
             filename={`video_${m.id}.mp4`}
-            sent={!!m.sent}
+            sent={sent}
             bubbleTextColor={bubbleTextColor}
             mediaHintColor={mediaHintColor}
             onPreview={
@@ -429,7 +434,7 @@ export function InboxBubbleRichContent({
   if (upper === 'AUDIO' || upper === 'VOICE') {
     if (!m.mediaUrl) {
       return (
-        <View style={styles.block}>
+        <View style={blockRoot}>
           {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
           {quoted}
           <View style={styles.typePlaceholderRow}>
@@ -442,11 +447,11 @@ export function InboxBubbleRichContent({
     }
     const audioId = m.mediaUrl;
     return (
-      <View style={styles.block}>
+      <View style={blockRoot}>
         {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
         {quoted}
         {Platform.OS === 'web' ? (
-          <View style={styles.videoWebOuter}>
+          <View style={[styles.videoWebOuter, { alignSelf: sent ? 'flex-end' : 'flex-start' }]}>
             <View style={styles.audioWebWrap}>
               <InboxWebVideoOrAudio kind="audio" mediaUrl={audioId} maxWidth={maxW} />
             </View>
@@ -467,7 +472,7 @@ export function InboxBubbleRichContent({
             subtitle={onOpenMediaPreview ? 'Tap for fullscreen' : 'Tap to download / open'}
             mediaUrl={audioId}
             filename={`voice_${m.id}.ogg`}
-            sent={!!m.sent}
+            sent={sent}
             bubbleTextColor={bubbleTextColor}
             mediaHintColor={mediaHintColor}
             onPreview={
@@ -483,7 +488,7 @@ export function InboxBubbleRichContent({
   if (upper === 'DOCUMENT') {
     if (!m.mediaUrl) {
       return (
-        <View style={styles.block}>
+        <View style={blockRoot}>
           {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
           {quoted}
           <View style={styles.typePlaceholderRow}>
@@ -507,7 +512,7 @@ export function InboxBubbleRichContent({
         }
       })();
     return (
-      <View style={styles.block}>
+      <View style={blockRoot}>
         {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
         {quoted}
         <Pressable
@@ -521,6 +526,7 @@ export function InboxBubbleRichContent({
           onLongPress={onOpenMediaPreview ? downloadDoc : undefined}
           style={({ pressed }) => [
             styles.docCard,
+            { alignSelf: sent ? 'flex-end' : 'flex-start' },
             {
               backgroundColor: accent.bg,
               borderColor: accent.border,
@@ -551,7 +557,7 @@ export function InboxBubbleRichContent({
     if (coords) {
       const href = `https://www.google.com/maps?q=${encodeURIComponent(coords.lat)},${encodeURIComponent(coords.lng)}`;
       return (
-        <View style={styles.block}>
+        <View style={blockRoot}>
           {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
           {quoted}
           <Pressable
@@ -572,7 +578,7 @@ export function InboxBubbleRichContent({
   if (upper === 'TEMPLATE') {
     const raw = (m.text || '').replace(/^TEMPLATE:\s*/i, '').trim();
     return (
-      <View style={styles.block}>
+      <View style={blockRoot}>
         {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
         {quoted}
         <View style={styles.templateCard}>
@@ -594,7 +600,7 @@ export function InboxBubbleRichContent({
         ? 'Catalog order received (details may be unavailable for older messages).'
         : m.text || 'Order';
     return (
-      <View style={styles.block}>
+      <View style={blockRoot}>
         {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
         {quoted}
         <View style={styles.orderCard}>
@@ -610,7 +616,7 @@ export function InboxBubbleRichContent({
     const rawType = String((meta as { rawType?: string }).rawType || '').toLowerCase();
     const isOtp = rawType === 'authentication' || rawType === 'system';
     return (
-      <View style={styles.block}>
+      <View style={blockRoot}>
         {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
         {quoted}
         <View style={styles.unsupportedRow}>
@@ -625,7 +631,7 @@ export function InboxBubbleRichContent({
 
   // Default: plain / interactive / contact stored as text, etc.
   return (
-    <View style={styles.block}>
+    <View style={blockRoot}>
       {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
       {quoted}
       <LinkifiedWhatsAppBubbleText
@@ -641,6 +647,8 @@ export function InboxBubbleRichContent({
 
 const styles = StyleSheet.create({
   block: { gap: 6 },
+  blockIncoming: { alignItems: 'flex-start' },
+  blockOutgoing: { alignItems: 'flex-end' },
   forwardedRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
   forwardedText: { fontSize: 11, fontStyle: 'italic', fontWeight: '600' },
   quotedBox: {
@@ -653,7 +661,7 @@ const styles = StyleSheet.create({
   },
   quotedWho: { fontSize: 10, fontWeight: '700', marginBottom: 2 },
   quotedPreview: { fontSize: 12, lineHeight: 16 },
-  stickerWrap: { paddingVertical: 4, alignItems: 'flex-start' },
+  stickerWrap: { paddingVertical: 4 },
   previewTap: { position: 'relative', alignSelf: 'flex-start' },
   expandFab: {
     position: 'absolute',

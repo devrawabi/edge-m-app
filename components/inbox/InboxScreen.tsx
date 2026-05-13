@@ -11,6 +11,7 @@ import {
   FlatList,
   Image,
   ImageBackground,
+  Keyboard,
   KeyboardAvoidingView,
   Linking,
   Modal,
@@ -236,6 +237,7 @@ export function InboxScreen() {
   const [attachSheetVisible, setAttachSheetVisible] = useState(false);
   const [mediaPreviewVisible, setMediaPreviewVisible] = useState(false);
   const [mediaPreviewRequest, setMediaPreviewRequest] = useState<InboxMediaPreviewRequest | null>(null);
+  const [threadKeyboardOpen, setThreadKeyboardOpen] = useState(false);
 
   const resyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mailboxRef = useRef<Mailbox>(mailbox);
@@ -250,6 +252,21 @@ export function InboxScreen() {
   useEffect(() => {
     setMediaPreviewVisible(false);
     setMediaPreviewRequest(null);
+  }, [selectedChat?.id]);
+
+  useEffect(() => {
+    if (!selectedChat) {
+      setThreadKeyboardOpen(false);
+      return;
+    }
+    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const subShow = Keyboard.addListener(showEvt, () => setThreadKeyboardOpen(true));
+    const subHide = Keyboard.addListener(hideEvt, () => setThreadKeyboardOpen(false));
+    return () => {
+      subShow.remove();
+      subHide.remove();
+    };
   }, [selectedChat?.id]);
 
   useEffect(() => {
@@ -966,6 +983,8 @@ export function InboxScreen() {
                 inverted
                 style={styles.threadMessageList}
                 keyExtractor={(item) => item.id}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
                 contentContainerStyle={styles.msgListPad}
                 onEndReached={() => void loadOlderMessages()}
                 onEndReachedThreshold={0.15}
@@ -1032,6 +1051,7 @@ export function InboxScreen() {
                           ) : (
                             <InboxBubbleRichContent
                               message={m}
+                              sent={!!m.sent}
                               waBubblePalette={waBubblePalette}
                               bubbleTextStyle={styles.bubbleText}
                               bubbleTextColor={t.bubbleText}
@@ -1083,7 +1103,10 @@ export function InboxScreen() {
               {
                 backgroundColor: t.composerStripBg,
                 borderTopColor: t.composerStripBorderTop,
-                paddingBottom: Math.max(insets.bottom, 8) + 4,
+                paddingBottom:
+                  Platform.OS === 'android' && threadKeyboardOpen
+                    ? 10
+                    : Math.max(insets.bottom, 8) + 4,
               },
             ]}
           >

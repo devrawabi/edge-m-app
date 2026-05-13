@@ -1,3 +1,5 @@
+import 'react-native-gesture-handler';
+
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { useFonts } from 'expo-font';
@@ -7,6 +9,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import 'react-native-reanimated';
 
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { SessionProvider } from '@/context/SessionContext';
@@ -45,13 +48,15 @@ export default function RootLayout() {
 
 function RootLayoutNav() {
   return (
-    <SafeAreaProvider>
-      <ThemePreferenceProvider>
-        <SessionProvider>
-          <NavigationThemeShell />
-        </SessionProvider>
-      </ThemePreferenceProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <ThemePreferenceProvider>
+          <SessionProvider>
+            <NavigationThemeShell />
+          </SessionProvider>
+        </ThemePreferenceProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 

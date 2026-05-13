@@ -3,7 +3,6 @@ import { Video, ResizeMode } from 'expo-av';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Dimensions,
   Modal,
   Platform,
   Pressable,
@@ -12,7 +11,6 @@ import {
   StyleSheet,
   Text,
   View,
-  Image,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -21,6 +19,7 @@ import * as XLSX from 'xlsx';
 import { useInboxMediaSource } from '@/hooks/useInboxMediaSource';
 import { downloadInboxMediaToCache, fetchInboxMediaBlob } from '@/lib/inbox-download-media';
 import type { InboxMediaPreviewRequest } from '@/types/inbox-media-preview';
+import { ZoomablePreviewImage } from '@/components/inbox/ZoomablePreviewImage';
 
 type Props = {
   visible: boolean;
@@ -28,11 +27,14 @@ type Props = {
   onClose: () => void;
 };
 
-function docKindFromName(name: string): 'pdf' | 'text' | 'sheet' | 'binary' {
+function docKindFromName(name: string): 'pdf' | 'text' | 'sheet' | 'image' | 'video' | 'audio' | 'binary' {
   const l = name.toLowerCase();
   if (l.endsWith('.pdf')) return 'pdf';
-  if (/\.(csv|tsv|txt|json|log|md)$/i.test(l)) return 'text';
+  if (/\.(csv|tsv|txt|json|log|md|html?|xml|yml|yaml)$/i.test(l)) return 'text';
   if (/\.(xlsx?|xlsm|ods)$/i.test(l)) return 'sheet';
+  if (/\.(jpe?g|png|gif|webp|bmp|heic|svg|avif)$/i.test(l)) return 'image';
+  if (/\.(mp4|webm|mov|mkv|m4v)$/i.test(l)) return 'video';
+  if (/\.(mp3|m4a|aac|ogg|opus|wav|flac)$/i.test(l)) return 'audio';
   return 'binary';
 }
 
@@ -53,14 +55,77 @@ function PreviewImageBody({ mediaUrl }: { mediaUrl: string }) {
       </View>
     );
   }
-  const { width: winW, height: winH } = Dimensions.get('window');
   return (
-    <View style={[styles.imageScroll, { minHeight: Math.min(winH - 120, 520) }]}>
-      <Image
-        source={{ uri: src.uri, ...(src.headers ? { headers: src.headers } : {}) }}
-        style={{ width: winW, height: Math.min(winH - 120, 720) }}
-        resizeMode="contain"
-      />
+    <View style={styles.imageZoomShell}>
+      <ZoomablePreviewImage uri={src.uri} headers={src.headers} />
+      <Text style={styles.zoomHint} pointerEvents="none">
+        {Platform.OS === 'web' ? 'Scroll or pinch to zoom' : 'Pinch to zoom · drag when zoomed'}
+      </Text>
+    </View>
+  );
+}
+
+function PreviewDocumentImage({ mediaUrl, fileName }: { mediaUrl: string; fileName: string }) {
+  const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [uri, setUri] = useState<string | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPhase('loading');
+    setUri(null);
+    if (blobUrlRef.current) {
+      URL.revokeObjectURL(blobUrlRef.current);
+      blobUrlRef.current = null;
+    }
+    void (async () => {
+      try {
+        if (Platform.OS === 'web') {
+          const blob = await fetchInboxMediaBlob(mediaUrl);
+          if (cancelled) return;
+          const u = URL.createObjectURL(blob);
+          blobUrlRef.current = u;
+          setUri(u);
+        } else {
+          const local = await downloadInboxMediaToCache(mediaUrl, fileName);
+          if (cancelled) return;
+          setUri(local);
+        }
+        if (!cancelled) setPhase('ready');
+      } catch {
+        if (!cancelled) setPhase('error');
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+    };
+  }, [fileName, mediaUrl]);
+
+  if (phase === 'loading') {
+    return (
+      <View style={styles.centerFill}>
+        <ActivityIndicator size="large" color="#fff" />
+        <Text style={styles.hintBelowSpinner}>Loading image…</Text>
+      </View>
+    );
+  }
+  if (phase === 'error' || !uri) {
+    return (
+      <View style={styles.centerFill}>
+        <Text style={styles.errorText}>Could not load image</Text>
+      </View>
+    );
+  }
+  return (
+    <View style={styles.imageZoomShell}>
+      <ZoomablePreviewImage uri={uri} />
+      <Text style={styles.zoomHint} pointerEvents="none">
+        {Platform.OS === 'web' ? 'Scroll or pinch to zoom' : 'Pinch to zoom · drag when zoomed'}
+      </Text>
     </View>
   );
 }
@@ -164,8 +229,18 @@ function PreviewPdfWeb({ blobUrl }: { blobUrl: string }) {
   }) as React.ReactElement;
 }
 
-function PreviewDocumentBody({ mediaUrl, fileName }: { mediaUrl: string; fileName: string }) {
-  const kind = useMemo(() => docKindFromName(fileName), [fileName]);
+/** PDF / text / spreadsheet / non-preview file types only (owns all hooks below). */
+function PreviewDocumentPdfTextSheetBinary({
+  mediaUrl,
+  fileName,
+  onShare,
+  kind,
+}: {
+  mediaUrl: string;
+  fileName: string;
+  onShare: () => void;
+  kind: 'pdf' | 'text' | 'sheet' | 'binary';
+}) {
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [textContent, setTextContent] = useState<string | null>(null);
   const [sheetRows, setSheetRows] = useState<unknown[][] | null>(null);
@@ -268,9 +343,13 @@ function PreviewDocumentBody({ mediaUrl, fileName }: { mediaUrl: string; fileNam
   if (kind === 'binary') {
     return (
       <View style={styles.centerFill}>
-        <Ionicons name="document-lock-outline" size={56} color="#9ca3af" />
-        <Text style={styles.binaryTitle}>No in-app preview</Text>
-        <Text style={styles.binarySub}>Use Share to open this file in another app.</Text>
+        <Ionicons name="document-text-outline" size={56} color="#9ca3af" />
+        <Text style={styles.binaryTitle}>No preview for this file type</Text>
+        <Text style={styles.binarySub}>Share opens it in another app (Word, Drive, etc.).</Text>
+        <Pressable onPress={onShare} style={styles.sharePrimaryBtn}>
+          <Ionicons name="share-outline" size={22} color="#fff" />
+          <Text style={styles.sharePrimaryBtnText}>Share file</Text>
+        </Pressable>
       </View>
     );
   }
@@ -329,13 +408,35 @@ function PreviewDocumentBody({ mediaUrl, fileName }: { mediaUrl: string; fileNam
   );
 }
 
+function PreviewDocumentBody({
+  mediaUrl,
+  fileName,
+  onShare,
+}: {
+  mediaUrl: string;
+  fileName: string;
+  onShare: () => void;
+}) {
+  const kind = useMemo(() => docKindFromName(fileName), [fileName]);
+
+  if (kind === 'image') {
+    return <PreviewDocumentImage mediaUrl={mediaUrl} fileName={fileName} />;
+  }
+  if (kind === 'video') {
+    return <PreviewVideoAudioBody kind="video" mediaUrl={mediaUrl} />;
+  }
+  if (kind === 'audio') {
+    return <PreviewVideoAudioBody kind="audio" mediaUrl={mediaUrl} />;
+  }
+  return <PreviewDocumentPdfTextSheetBinary mediaUrl={mediaUrl} fileName={fileName} onShare={onShare} kind={kind} />;
+}
+
 export function InboxFullScreenMediaModal({ visible, request, onClose }: Props) {
   const insets = useSafeAreaInsets();
   const title = useMemo(() => {
     if (!request) return '';
     if (request.kind === 'document') return request.fileName;
     if (request.kind === 'image') return 'Photo';
-    if (request.kind === 'sticker') return 'Sticker';
     if (request.kind === 'video') return 'Video';
     return 'Audio';
   }, [request]);
@@ -350,11 +451,9 @@ export function InboxFullScreenMediaModal({ visible, request, onClose }: Props) 
             ? request.fileName
             : request.kind === 'video'
               ? 'video.mp4'
-              : request.kind === 'audio'
+                : request.kind === 'audio'
                 ? 'audio.ogg'
-                : request.kind === 'sticker'
-                  ? 'sticker.webp'
-                  : 'image.jpg';
+                : 'image.jpg';
         if (typeof document === 'undefined') return;
         const u = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -375,9 +474,7 @@ export function InboxFullScreenMediaModal({ visible, request, onClose }: Props) 
           ? 'clip.mp4'
           : request.kind === 'audio'
             ? 'voice.ogg'
-            : request.kind === 'sticker'
-              ? 'sticker.webp'
-              : 'photo.jpg';
+            : 'photo.jpg';
       const uri = await downloadInboxMediaToCache(request.mediaUrl, ext);
       await Share.share({ url: uri });
     } catch (e) {
@@ -405,14 +502,16 @@ export function InboxFullScreenMediaModal({ visible, request, onClose }: Props) 
         </View>
 
         <View style={styles.body}>
-          {request.kind === 'image' || request.kind === 'sticker' ? (
-            <PreviewImageBody mediaUrl={request.mediaUrl} />
-          ) : null}
+          {request.kind === 'image' ? <PreviewImageBody mediaUrl={request.mediaUrl} /> : null}
           {request.kind === 'video' || request.kind === 'audio' ? (
             <PreviewVideoAudioBody kind={request.kind === 'video' ? 'video' : 'audio'} mediaUrl={request.mediaUrl} />
           ) : null}
           {request.kind === 'document' ? (
-            <PreviewDocumentBody mediaUrl={request.mediaUrl} fileName={request.fileName} />
+            <PreviewDocumentBody
+              mediaUrl={request.mediaUrl}
+              fileName={request.fileName}
+              onShare={() => void onShare()}
+            />
           ) : null}
         </View>
       </View>
@@ -466,12 +565,34 @@ const styles = StyleSheet.create({
     fontSize: 15,
     textAlign: 'center',
   },
-  imageScroll: {
-    flexGrow: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 12,
+  imageZoomShell: {
+    flex: 1,
     width: '100%',
+    justifyContent: 'center',
+  },
+  zoomHint: {
+    position: 'absolute',
+    bottom: 16,
+    left: 16,
+    right: 16,
+    textAlign: 'center',
+    color: 'rgba(255,255,255,0.45)',
+    fontSize: 12,
+  },
+  sharePrimaryBtn: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#2563eb',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 14,
+  },
+  sharePrimaryBtnText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
   },
   videoFill: {
     flex: 1,
