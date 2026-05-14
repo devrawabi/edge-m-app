@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { formatCallDuration, type ParsedCallBubble } from '@/lib/inbox-call-bubble';
 
@@ -9,9 +9,11 @@ type Props = {
   sent: boolean;
   bubbleTextColor: string;
   mediaHintColor: string;
+  onPress?: () => void;
+  isRinging?: boolean;
 };
 
-export function InboxCallBubble({ parsed, sent, bubbleTextColor, mediaHintColor }: Props) {
+export function InboxCallBubble({ parsed, sent, bubbleTextColor, mediaHintColor, onPress, isRinging }: Props) {
   const { direction, outcome, durationSec } = parsed;
   const dur = formatCallDuration(durationSec);
 
@@ -71,7 +73,7 @@ export function InboxCallBubble({ parsed, sent, bubbleTextColor, mediaHintColor 
         : 'arrow-up-outline'
       : 'call';
 
-  return (
+  const cardContent = (
     <View style={[styles.card, styles.cardStretch, { borderColor: palette.border, backgroundColor: palette.strip }]}>
       <View style={[styles.accentBar, { backgroundColor: palette.accent }]} />
       <View style={styles.row}>
@@ -93,6 +95,17 @@ export function InboxCallBubble({ parsed, sent, bubbleTextColor, mediaHintColor 
       </View>
     </View>
   );
+
+  // Make the ringing incoming call card tappable to open the full call screen
+  if (onPress && isRinging) {
+    return (
+      <Pressable onPress={onPress} style={styles.pressable}>
+        {cardContent}
+      </Pressable>
+    );
+  }
+
+  return cardContent;
 }
 
 const styles = StyleSheet.create({
@@ -161,5 +174,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     lineHeight: 18,
     letterSpacing: 0.1,
+  },
+  pressable: {
+    alignSelf: 'stretch',
   },
 });

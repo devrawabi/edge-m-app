@@ -5,10 +5,10 @@ import {
   ActivityIndicator,
   AppState,
   AppStateStatus,
-  Modal,
   Pressable,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -28,6 +28,20 @@ function callIdsLooselyMatch(a: string, b: string): boolean {
   return sa.includes(sb) || sb.includes(sa);
 }
 
+// Global trigger so that clicking a ringing call bubble anywhere
+// (InboxCallBubble) can open the full-screen Answer/Decline overlay.
+let forceShowIncoming: ((payload: WhatsAppIncomingCallPayload) => void) | null = null;
+
+export function showIncomingCallScreen(payload: WhatsAppIncomingCallPayload) {
+  if (forceShowIncoming) {
+    forceShowIncoming(payload);
+  } else {
+    // Fallback: if host not mounted yet, we can still try to set it via a microtask
+    // (rare). In practice the host is always mounted after login.
+    queueMicrotask(() => forceShowIncoming?.(payload));
+  }
+}
+
 export function WhatsAppIncomingCallHost() {
   const session = useSessionContext();
   const router = useRouter();
@@ -40,17 +54,35 @@ export function WhatsAppIncomingCallHost() {
   const incomingRef = useRef(incoming);
   incomingRef.current = incoming;
 
+  // Register the global trigger when the host mounts
+  React.useEffect(() => {
+    forceShowIncoming = (p: WhatsAppIncomingCallPayload) => {
+      setIncoming((cur) => {
+        if (cur && callIdsLooselyMatch(cur.callId, p.callId)) return cur;
+        return p;
+      });
+    };
+    return () => {
+      forceShowIncoming = null;
+    };
+  }, []);
+
   const dismiss = useCallback(() => setIncoming(null), []);
 
   const onAttendCall = useCallback(() => {
     const p = incomingRef.current;
-    dismiss();
+    // Navigate first, then dismiss the overlay.
+    // If we dismiss first, the component unmounts before navigation can start.
     if (p?.contactId) {
       router.push({ pathname: '/inbox', params: { openContactId: p.contactId } });
     } else {
       router.push('/inbox');
     }
-    queueMicrotask(() => nudgeInboxHeader());
+    // Use a microtask so the navigation starts before we hide the overlay
+    queueMicrotask(() => {
+      dismiss();
+      nudgeInboxHeader();
+    });
   }, [dismiss, router]);
 
   const onReject = useCallback(async () => {
@@ -172,35 +204,38 @@ export function WhatsAppIncomingCallHost() {
 
   if (!incoming) return null;
 
-  const cardBg = isDark ? '#0f172a' : '#ffffff';
-  const border = isDark ? '#334155' : '#e2e8f0';
   const titleColor = isDark ? '#f8fafc' : '#0f172a';
   const subColor = isDark ? '#94a3b8' : '#64748b';
   const green = '#25D366';
   const red = '#ef4444';
 
+  // Full-screen overlay rendered directly (bypasses Modal web positioning bugs)
+  // This guarantees the call screen appears in the viewport even when nested inside
+  // React Navigation / ScrollViews that previously caused top=-1732px offsets.
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={dismiss}>
-      <View style={[styles.backdrop, { paddingTop: insets.top + 20, paddingBottom: insets.bottom + 20 }]}>
+    <View style={styles.fullScreenOverlay} pointerEvents="box-none">
+      <View style={styles.backdrop}>
         <View style={styles.callScreen}>
-          {/* Top status */}
-          <View style={styles.statusRow}>
+          {/* Top status bar area */}
+          <View style={[styles.statusRow, { paddingTop: insets.top + 12 }]}>
             <View style={[styles.statusPill, { backgroundColor: isDark ? '#1e293b' : '#f1f5f9' }]}>
               <Ionicons name="logo-whatsapp" size={14} color={green} />
               <Text style={[styles.statusText, { color: subColor }]}>WhatsApp Voice Call</Text>
             </View>
           </View>
 
-          {/* Caller info - large and centered like native call screen */}
+          {/* Caller info - centered like native Android/iOS WhatsApp */}
           <View style={styles.callerSection}>
             <View style={[styles.avatar, { backgroundColor: isDark ? '#1e293b' : '#dcfce7', borderColor: green }]}>
               <Ionicons name="person" size={64} color={isDark ? '#64748b' : '#166534'} />
             </View>
             <Text style={[styles.callerName, { color: titleColor }]} numberOfLines={1}>
-              {incoming.contactName || 'Unknown caller'}
+              {incoming.contactName && incoming.contactName !== 'Unknown' 
+                ? incoming.contactName 
+                : (incoming.phoneNumber || 'Unknown caller')}
             </Text>
             <Text style={[styles.callerPhone, { color: subColor }]} numberOfLines={1}>
-              {incoming.phoneNumber}
+              {incoming.phoneNumber || incoming.contactName}
             </Text>
 
             <View style={styles.ringingRow}>
@@ -214,16 +249,14 @@ export function WhatsAppIncomingCallHost() {
             )}
           </View>
 
-          {/* Action buttons - big, clear Answer / Decline like phone UI */}
-          <View style={styles.callActions}>
-            <Pressable
+          {/* Large Answer / Decline buttons (Android WhatsApp style) */}
+          <View style={[styles.callActions, { paddingBottom: insets.bottom + 24 }]}>
+            {/* Decline Button - TouchableOpacity for reliable web touch handling */}
+            <TouchableOpacity
               onPress={onReject}
               disabled={rejecting}
-              style={({ pressed }) => [
-                styles.callBtn,
-                styles.declineBtn,
-                { opacity: rejecting ? 0.6 : pressed ? 0.8 : 1 },
-              ]}
+              activeOpacity={0.7}
+              style={[styles.callBtn, styles.declineBtn, { opacity: rejecting ? 0.6 : 1 }]}
             >
               {rejecting ? (
                 <ActivityIndicator color="#fff" size="large" />
@@ -235,21 +268,19 @@ export function WhatsAppIncomingCallHost() {
                   <Text style={styles.callBtnLabel}>Decline</Text>
                 </>
               )}
-            </Pressable>
+            </TouchableOpacity>
 
-            <Pressable
+            {/* Answer Button */}
+            <TouchableOpacity
               onPress={onAttendCall}
-              style={({ pressed }) => [
-                styles.callBtn,
-                styles.answerBtn,
-                pressed && { opacity: 0.85 },
-              ]}
+              activeOpacity={0.7}
+              style={[styles.callBtn, styles.answerBtn]}
             >
               <View style={[styles.callIconCircle, { backgroundColor: green }]}>
                 <Ionicons name="call" size={32} color="#fff" />
               </View>
               <Text style={styles.callBtnLabel}>Answer</Text>
-            </Pressable>
+            </TouchableOpacity>
           </View>
 
           <Pressable onPress={dismiss} hitSlop={20} style={styles.dismissRow}>
@@ -257,100 +288,119 @@ export function WhatsAppIncomingCallHost() {
           </Pressable>
         </View>
       </View>
-    </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  // Full-screen overlay that sits on top of everything (including navigation)
+  fullScreenOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 99999,
+  },
+  // Dark backdrop that covers the entire screen
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.75)',
+    backgroundColor: 'rgba(15, 23, 42, 0.96)',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
   },
+  // Main call content container
   callScreen: {
+    flex: 1,
     width: '100%',
-    maxWidth: 420,
+    maxWidth: 480,
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 24,
   },
   statusRow: {
-    marginBottom: 24,
+    marginBottom: 12,
+    alignItems: 'center',
   },
   statusPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
     borderRadius: 999,
   },
   statusText: {
     fontSize: 12,
     fontWeight: '600',
-    letterSpacing: 0.5,
+    letterSpacing: 0.6,
   },
   callerSection: {
-    alignItems: 'center',
-    marginBottom: 48,
-  },
-  avatar: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 3,
-    marginBottom: 20,
+    marginTop: -40,
+  },
+  avatar: {
+    width: 132,
+    height: 132,
+    borderRadius: 66,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 4,
+    marginBottom: 24,
   },
   callerName: {
-    fontSize: 28,
+    fontSize: 30,
     fontWeight: '700',
     textAlign: 'center',
+    paddingHorizontal: 16,
   },
   callerPhone: {
-    fontSize: 16,
-    marginTop: 4,
-    opacity: 0.9,
+    fontSize: 17,
+    marginTop: 6,
+    opacity: 0.85,
   },
   ringingRow: {
-    marginTop: 16,
+    marginTop: 18,
   },
   ringingText: {
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '600',
   },
   receiveTime: {
-    fontSize: 13,
-    marginTop: 8,
-    opacity: 0.8,
+    fontSize: 14,
+    marginTop: 12,
+    opacity: 0.75,
+    fontVariant: ['tabular-nums'],
   },
   callActions: {
     flexDirection: 'row',
     width: '100%',
     justifyContent: 'space-around',
-    paddingHorizontal: 20,
-    marginBottom: 32,
+    paddingHorizontal: 16,
+    marginTop: 24,
   },
   callBtn: {
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
   },
   callIconCircle: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 78,
+    height: 78,
+    borderRadius: 39,
     alignItems: 'center',
     justifyContent: 'center',
   },
   callBtnLabel: {
     color: '#fff',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '600',
   },
   declineBtn: {},
   answerBtn: {},
   dismissRow: {
-    paddingVertical: 8,
+    paddingVertical: 12,
+    marginBottom: 8,
   },
 });

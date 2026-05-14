@@ -1225,6 +1225,21 @@ export function InboxScreen() {
     await uploadAndSendMedia({ uri: a.uri, name: a.name, mime, webFile: a.file }, true);
   }, [uploadAndSendMedia]);
 
+  const pickAudio = useCallback(async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'audio/*',
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.[0]) return;
+      const a = result.assets[0];
+      const mime = a.mimeType || 'audio/mpeg';
+      await uploadAndSendMedia({ uri: a.uri, name: a.name, mime, webFile: a.file }, true);
+    } catch (e: any) {
+      Alert.alert('Audio', e?.message || 'Could not pick audio file.');
+    }
+  }, [uploadAndSendMedia]);
+
   const finalizeStickerOutbound = useCallback(
     async (mediaId: string) => {
       if (!selectedChat?.id) {
@@ -1945,12 +1960,7 @@ export function InboxScreen() {
                   accessibilityRole="button"
                   accessibilityLabel="Record voice message"
                   hitSlop={6}
-                  onPress={() =>
-                    Alert.alert(
-                      'Voice message',
-                      'Voice recording is available in the web inbox. On mobile, send text or attach a file.',
-                    )
-                  }
+                  onPress={pickAudio}
                   style={({ pressed }) => [
                     styles.composerMicOuter,
                     { backgroundColor: t.composerMicBtnBg },

@@ -33,6 +33,7 @@ import type { InboxMediaPreviewRequest } from '@/types/inbox-media-preview';
 
 import { BubbleLinkPreviews } from '@/components/inbox/InboxLinkPreviewCard';
 import { InboxCallBubble } from '@/components/inbox/InboxCallBubble';
+import { showIncomingCallScreen } from '@/components/WhatsAppIncomingCallHost';
 import type { ContactCardActionPayload } from '@/components/inbox/InboxContactBubble';
 import { InboxContactBubble } from '@/components/inbox/InboxContactBubble';
 
@@ -358,6 +359,31 @@ export function InboxBubbleRichContent({
 
   const callParsed = tryParseCallBubble(m);
   if (callParsed) {
+    const isRingingIncoming =
+      callParsed.direction === 'incoming' && callParsed.outcome === 'active';
+
+    const handleRingingPress = () => {
+      // Reconstruct a payload from the message metadata so the full call screen can show
+      const meta = parseInboxMetadataRecord(m.metadata);
+      const metaName = meta.contactName ? String(meta.contactName) : '';
+      const metaPhone = meta.phoneNumber ? String(meta.phoneNumber) : '';
+      const msgName = (m as any).contactName ? String((m as any).contactName) : '';
+      const msgPhone = (m as any).phoneNumber ? String((m as any).phoneNumber) : '';
+
+      const finalName = metaName || msgName || metaPhone || msgPhone || 'Unknown caller';
+      const finalPhone = metaPhone || msgPhone || metaName || msgName || '';
+
+      const payload = {
+        callId: String(meta.callId || m.id || `call-${Date.now()}`),
+        contactName: finalName,
+        phoneNumber: finalPhone,
+        status: 'ringing' as const,
+        contactId: m.contactId ? String(m.contactId) : undefined,
+        timestamp: Date.now(),
+      };
+      showIncomingCallScreen(payload);
+    };
+
     return (
       <View style={blockRoot}>
         {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
@@ -367,6 +393,8 @@ export function InboxBubbleRichContent({
           sent={sent}
           bubbleTextColor={bubbleTextColor}
           mediaHintColor={mediaHintColor}
+          onPress={isRingingIncoming ? handleRingingPress : undefined}
+          isRinging={isRingingIncoming}
         />
       </View>
     );
@@ -825,7 +853,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
     borderRadius: 14,
-    maxWidth: 280,
+    maxWidth: Platform.OS === 'web' ? 280 : 340,
   },
   mediaOpenIcon: {
     width: 44,
@@ -845,7 +873,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
-    maxWidth: 288,
+    maxWidth: Platform.OS === 'web' ? 288 : 360,
     minHeight: 58,
   },
   waDocIconTile: {
@@ -889,7 +917,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 14,
     backgroundColor: '#eff6ff',
-    maxWidth: 280,
+    maxWidth: Platform.OS === 'web' ? 280 : 360,
   },
   locText: { flex: 1 },
   locTitle: { fontSize: 14, fontWeight: '700', color: '#1e3a8a' },

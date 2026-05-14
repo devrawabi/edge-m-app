@@ -2,6 +2,7 @@ import { Ionicons } from '@expo/vector-icons';
 import React, { useMemo } from 'react';
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -151,7 +152,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
     padding: 8,
-    maxWidth: 260,
+    maxWidth: Platform.OS === 'web' ? 260 : 340,
     minWidth: 168,
     position: 'relative',
     overflow: 'hidden',
