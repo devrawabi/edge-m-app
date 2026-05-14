@@ -316,7 +316,7 @@ export function InboxStickerPickerPanel({
         onRequestClose={() => setMgmtSticker(null)}
       >
         <Pressable style={styles.mgmtBackdrop} onPress={() => setMgmtSticker(null)} />
-        <View style={styles.mgmtSheet} pointerEvents="box-none">
+        <View style={[styles.mgmtSheet, { pointerEvents: 'box-none' }]}>
           <View style={[styles.mgmtCard, { borderColor: theme.composerStripBorderTop }]}>
             <Text style={[styles.mgmtTitle, { color: theme.threadTitle }]}>Sticker</Text>
             {mgmtSticker ? (

@@ -12,6 +12,29 @@ export function realtimeMessageAlreadyInList(list: Idish[], raw: Record<string, 
   });
 }
 
+/** Append new row, or merge into existing row (same id/waId) when server re-pushes after background work (e.g. media URL). */
+export function mergeSocketMessageIntoList(prev: InboxMessage[], raw: Record<string, unknown>): InboxMessage[] {
+  const incoming = mapSocketPayloadToInboxMessage(raw);
+  const id = raw.id != null ? String(raw.id) : '';
+  const waId = raw.waId != null && raw.waId !== '' ? String(raw.waId) : '';
+  const idx = prev.findIndex((m) => {
+    const mid = m.id != null ? String(m.id) : '';
+    const mWa = m.waId != null && m.waId !== '' ? String(m.waId) : '';
+    return (id && mid === id) || (waId && mWa === waId);
+  });
+  if (idx === -1) return [...prev, incoming];
+  const cur = prev[idx];
+  const merged: InboxMessage = {
+    ...cur,
+    ...incoming,
+    id: cur.id,
+    waId: cur.waId ?? incoming.waId,
+  };
+  const next = [...prev];
+  next[idx] = merged;
+  return next;
+}
+
 export function mapSocketPayloadToInboxMessage(raw: Record<string, unknown>): InboxMessage {
   let parsedMetadata: unknown = null;
   if (raw.metadata != null) {

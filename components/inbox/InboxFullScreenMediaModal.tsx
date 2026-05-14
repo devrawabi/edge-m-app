@@ -68,7 +68,7 @@ function PreviewImageBody({ mediaUrl }: { mediaUrl: string }) {
   return (
     <View style={styles.imageZoomShell}>
       <ZoomablePreviewImage uri={src.uri} headers={src.headers} />
-      <Text style={styles.zoomHint} pointerEvents="none">
+      <Text style={styles.zoomHint}>
         {Platform.OS === 'web' ? 'Scroll or pinch to zoom' : 'Pinch to zoom · drag when zoomed'}
       </Text>
     </View>
@@ -133,7 +133,7 @@ function PreviewDocumentImage({ mediaUrl, fileName }: { mediaUrl: string; fileNa
   return (
     <View style={styles.imageZoomShell}>
       <ZoomablePreviewImage uri={uri} />
-      <Text style={styles.zoomHint} pointerEvents="none">
+      <Text style={styles.zoomHint}>
         {Platform.OS === 'web' ? 'Scroll or pinch to zoom' : 'Pinch to zoom · drag when zoomed'}
       </Text>
     </View>
@@ -562,6 +562,7 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: 'rgba(255,255,255,0.45)',
     fontSize: 12,
+    pointerEvents: 'none',
   },
   sharePrimaryBtn: {
     marginTop: 8,

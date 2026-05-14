@@ -11,6 +11,30 @@ type Jar = Record<string, string>;
 
 let memoryJar: Jar | null = null;
 let initPromise: Promise<void> | null = null;
+/** Stable fingerprint of what was last written to SecureStore (avoids slow no-op writes). */
+let lastDiskSerialized: string | null = null;
+
+export function stableJarString(j: Jar | null | undefined): string {
+  const base = j ?? {};
+  const keys = Object.keys(base).sort();
+  const sorted: Jar = {};
+  for (const k of keys) {
+    sorted[k] = base[k];
+  }
+  return JSON.stringify(sorted);
+}
+
+export function cookieJarsEqual(a: Jar, b: Jar): boolean {
+  return stableJarString(a) === stableJarString(b);
+}
+
+/** Cookie header from in-memory jar (call `initSessionJar` first on native). */
+export function buildCookieHeaderFromMemory(): string {
+  return Object.entries(memoryJar ?? {})
+    .map(([k, v]) => `${k}=${v}`)
+    .join('; ')
+    .trim();
+}
 
 async function hydrateFromSecureStore(): Promise<void> {
   if (memoryJar) return;
@@ -20,6 +44,7 @@ async function hydrateFromSecureStore(): Promise<void> {
   } catch {
     memoryJar = {};
   }
+  lastDiskSerialized = stableJarString(memoryJar);
 }
 
 export async function initSessionJar(): Promise<void> {
@@ -28,8 +53,13 @@ export async function initSessionJar(): Promise<void> {
 }
 
 export async function persistJar(next: Jar): Promise<void> {
-  memoryJar = next;
-  await SecureStore.setItemAsync(SESSION_COOKIE_STORE_KEY, JSON.stringify(next));
+  await initSessionJar();
+  const normalized: Jar = { ...next };
+  memoryJar = normalized;
+  const ser = stableJarString(normalized);
+  if (ser === lastDiskSerialized) return;
+  await SecureStore.setItemAsync(SESSION_COOKIE_STORE_KEY, ser);
+  lastDiskSerialized = ser;
 }
 
 export async function getCookieJar(): Promise<Jar> {
@@ -38,8 +68,6 @@ export async function getCookieJar(): Promise<Jar> {
 }
 
 export async function getCookieHeader(): Promise<string> {
-  const jar = await getCookieJar();
-  return Object.entries(jar)
-    .map(([k, v]) => `${k}=${v}`)
-    .join('; ');
+  await initSessionJar();
+  return buildCookieHeaderFromMemory();
 }

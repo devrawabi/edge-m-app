@@ -17,18 +17,24 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { useInboxMediaSource } from '@/hooks/useInboxMediaSource';
 import { getApiBaseUrl } from '@/constants/Config';
 import {
-  documentAccentForName,
   documentDisplayLabel,
   documentExtensionLabel,
   inboxCaptionShouldRender,
   parseInboxMetadataRecord,
   parseLocationCoords,
 } from '@/lib/inbox-bubble-rich';
+import { stripHtmlForMessageBody } from '@/lib/inbox-format';
+import { tryParseCallBubble } from '@/lib/inbox-call-bubble';
 import { api } from '@/lib/http';
 import { initSessionJar, getCookieHeader } from '@/lib/session-store';
 import { LinkifiedWhatsAppBubbleText, type WhatsAppBubblePalette } from '@/lib/whatsapp-message-text-rn';
 import type { InboxMessage } from '@/types/inbox';
 import type { InboxMediaPreviewRequest } from '@/types/inbox-media-preview';
+
+import { BubbleLinkPreviews } from '@/components/inbox/InboxLinkPreviewCard';
+import { InboxCallBubble } from '@/components/inbox/InboxCallBubble';
+import type { ContactCardActionPayload } from '@/components/inbox/InboxContactBubble';
+import { InboxContactBubble } from '@/components/inbox/InboxContactBubble';
 
 type Props = {
   message: InboxMessage;
@@ -37,7 +43,15 @@ type Props = {
   bubbleTextStyle: object;
   bubbleTextColor: string;
   mediaHintColor: string;
+  /** WhatsApp-style attachment strip inside bubble */
+  docStripBg: string;
+  docStripBorder: string;
   onOpenMediaPreview?: (req: InboxMediaPreviewRequest) => void;
+  onContactOpenChat?: (p: ContactCardActionPayload) => void | Promise<void>;
+  onContactSaveToDevice?: (p: ContactCardActionPayload) => void | Promise<void>;
+  contactCardBusyMessageId?: string | null;
+  /** Shown on quoted incoming bubbles instead of the generic “Customer” label. */
+  threadContactDisplayName?: string | null;
 };
 
 function MediaPreviewTarget({
@@ -53,7 +67,7 @@ function MediaPreviewTarget({
   return (
     <Pressable onPress={onOpen} style={[styles.previewTap, { alignSelf: sent ? 'flex-end' : 'flex-start' }]}>
       {children}
-      <View pointerEvents="none" style={styles.expandFab}>
+      <View style={[styles.expandFab, { pointerEvents: 'none' }]}>
         <Ionicons name="expand-outline" size={15} color="#fff" />
       </View>
     </Pressable>
@@ -63,25 +77,47 @@ function MediaPreviewTarget({
 function ForwardedLabel({ color }: { color: string }) {
   return (
     <View style={styles.forwardedRow}>
-      <Ionicons name="arrow-redo-outline" size={12} color={color} />
+      <Ionicons name="arrow-redo-outline" size={13} color={color} />
       <Text style={[styles.forwardedText, { color }]}>Forwarded</Text>
     </View>
+  );
+}
+
+function quotedIncomingAuthorLabel(
+  quoted: Record<string, unknown>,
+  threadContactDisplayName?: string | null,
+): string {
+  const fromMeta = (k: string) => {
+    const v = quoted[k];
+    return typeof v === 'string' && v.trim() ? v.trim() : '';
+  };
+  return (
+    fromMeta('fromName') ||
+    fromMeta('senderName') ||
+    fromMeta('contactName') ||
+    fromMeta('authorName') ||
+    (threadContactDisplayName && String(threadContactDisplayName).trim()) ||
+    'Contact'
   );
 }
 
 function QuotedSnippet({
   metadata,
   mediaHintColor,
+  threadContactDisplayName,
   onPress,
 }: {
   metadata: unknown;
   mediaHintColor: string;
+  threadContactDisplayName?: string | null;
   onPress?: () => void;
 }) {
   const meta = parseInboxMetadataRecord(metadata);
   const quoted = meta.quotedMessage as Record<string, unknown> | undefined;
   if (!quoted || typeof quoted !== 'object') return null;
-  const dir = quoted.direction === 'OUTGOING' ? 'You' : 'Customer';
+  const dirUpper = String(quoted.direction ?? '').toUpperCase();
+  const dir =
+    dirUpper === 'OUTGOING' ? 'You' : quotedIncomingAuthorLabel(quoted, threadContactDisplayName);
   const qType = String(quoted.type || 'TEXT').toUpperCase();
   const qContent = quoted.content != null ? String(quoted.content) : '';
   let preview = qContent;
@@ -98,7 +134,8 @@ function QuotedSnippet({
       disabled={!onPress}
       style={({ pressed }) => [
         styles.quotedBox,
-        { borderLeftColor: '#22c55e', opacity: pressed ? 0.85 : 1 },
+        styles.rowAlignLeadingEdge,
+        { borderLeftColor: '#25d366', opacity: pressed ? 0.85 : 1 },
       ]}
     >
       <Text style={[styles.quotedWho, { color: mediaHintColor }]}>{dir}</Text>
@@ -284,25 +321,80 @@ export function InboxBubbleRichContent({
   bubbleTextStyle,
   bubbleTextColor,
   mediaHintColor,
+  docStripBg,
+  docStripBorder,
   onOpenMediaPreview,
+  onContactOpenChat,
+  onContactSaveToDevice,
+  contactCardBusyMessageId,
+  threadContactDisplayName,
 }: Props) {
   const meta = parseInboxMetadataRecord(m.metadata);
   const upper = (m.type || 'TEXT').toUpperCase();
   const forwarded = Boolean(meta.isForwarded);
-  const quoted = meta.quotedMessage ? <QuotedSnippet metadata={m.metadata} mediaHintColor={mediaHintColor} /> : null;
-
-  const caption = inboxCaptionShouldRender(m.text) ? (
-    <LinkifiedWhatsAppBubbleText
-      messageId={m.id}
-      rawHtml={m.text || ''}
-      sent={!!m.sent}
-      palette={waBubblePalette}
-      style={bubbleTextStyle}
+  const quoted = meta.quotedMessage ? (
+    <QuotedSnippet
+      metadata={m.metadata}
+      mediaHintColor={mediaHintColor}
+      threadContactDisplayName={threadContactDisplayName}
     />
+  ) : null;
+
+  const captionBlock = inboxCaptionShouldRender(m.text) ? (
+    <>
+      <BubbleLinkPreviews plain={stripHtmlForMessageBody(m.text || '')} sent={sent} />
+      <LinkifiedWhatsAppBubbleText
+        messageId={m.id}
+        rawHtml={m.text || ''}
+        sent={!!m.sent}
+        palette={waBubblePalette}
+        style={bubbleTextStyle}
+      />
+    </>
   ) : null;
 
   const maxW = 260;
   const blockRoot = [styles.block, sent ? styles.blockOutgoing : styles.blockIncoming];
+
+  const callParsed = tryParseCallBubble(m);
+  if (callParsed) {
+    return (
+      <View style={blockRoot}>
+        {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
+        {quoted}
+        <InboxCallBubble
+          parsed={callParsed}
+          sent={sent}
+          bubbleTextColor={bubbleTextColor}
+          mediaHintColor={mediaHintColor}
+        />
+      </View>
+    );
+  }
+
+  const contactPlain = stripHtmlForMessageBody(m.text || '');
+  const isContactMessage =
+    upper === 'CONTACT' || /^CONTACT:\s*/i.test(contactPlain.trim());
+  if (isContactMessage && onContactOpenChat && onContactSaveToDevice) {
+    return (
+      <View style={blockRoot}>
+        {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
+        {quoted}
+        <InboxContactBubble
+          rawHtml={m.text || ''}
+          sent={sent}
+          bubbleTextColor={bubbleTextColor}
+          mediaHintColor={mediaHintColor}
+          docStripBg={docStripBg}
+          docStripBorder={docStripBorder}
+          messageId={m.id}
+          busyMessageId={contactCardBusyMessageId ?? null}
+          onOpenChat={onContactOpenChat}
+          onSaveToDevice={onContactSaveToDevice}
+        />
+      </View>
+    );
+  }
 
   if (upper === 'IMAGE') {
     if (!m.mediaUrl) {
@@ -314,7 +406,7 @@ export function InboxBubbleRichContent({
             <Ionicons name="image-outline" size={18} color={mediaHintColor} />
             <Text style={[styles.typePlaceholderText, { color: mediaHintColor }]}>Image</Text>
           </View>
-          {caption}
+          {captionBlock}
         </View>
       );
     }
@@ -339,7 +431,7 @@ export function InboxBubbleRichContent({
             resizeMode="cover"
           />
         </MediaPreviewTarget>
-        {caption}
+        {captionBlock}
       </View>
     );
   }
@@ -354,7 +446,7 @@ export function InboxBubbleRichContent({
             <Ionicons name="happy-outline" size={18} color={mediaHintColor} />
             <Text style={[styles.typePlaceholderText, { color: mediaHintColor }]}>Sticker</Text>
           </View>
-          {caption}
+          {captionBlock}
         </View>
       );
     }
@@ -372,7 +464,7 @@ export function InboxBubbleRichContent({
             resizeMode="contain"
           />
         </View>
-        {caption}
+        {captionBlock}
       </View>
     );
   }
@@ -387,7 +479,7 @@ export function InboxBubbleRichContent({
             <Ionicons name="videocam-outline" size={18} color={mediaHintColor} />
             <Text style={[styles.typePlaceholderText, { color: mediaHintColor }]}>Video</Text>
           </View>
-          {caption}
+          {captionBlock}
         </View>
       );
     }
@@ -426,7 +518,7 @@ export function InboxBubbleRichContent({
             }
           />
         )}
-        {caption}
+        {captionBlock}
       </View>
     );
   }
@@ -441,7 +533,7 @@ export function InboxBubbleRichContent({
             <Ionicons name="mic-outline" size={18} color={mediaHintColor} />
             <Text style={[styles.typePlaceholderText, { color: mediaHintColor }]}>Voice message</Text>
           </View>
-          {caption}
+          {captionBlock}
         </View>
       );
     }
@@ -480,7 +572,7 @@ export function InboxBubbleRichContent({
             }
           />
         )}
-        {caption}
+        {captionBlock}
       </View>
     );
   }
@@ -495,13 +587,15 @@ export function InboxBubbleRichContent({
             <Ionicons name="document-text-outline" size={18} color={mediaHintColor} />
             <Text style={[styles.typePlaceholderText, { color: mediaHintColor }]}>Document</Text>
           </View>
-          {caption}
+          {captionBlock}
         </View>
       );
     }
     const name = documentDisplayLabel(m);
     const ext = documentExtensionLabel(name);
-    const accent = documentAccentForName(name);
+    const extShort = ext.length > 4 ? ext.slice(0, 4) : ext;
+    const extLower = ext.toLowerCase();
+    const isPdf = extLower === 'pdf';
     const downloadDoc = () =>
       void (async () => {
         try {
@@ -525,29 +619,30 @@ export function InboxBubbleRichContent({
           }}
           onLongPress={onOpenMediaPreview ? downloadDoc : undefined}
           style={({ pressed }) => [
-            styles.docCard,
+            styles.waDocRow,
             { alignSelf: sent ? 'flex-end' : 'flex-start' },
             {
-              backgroundColor: accent.bg,
-              borderColor: accent.border,
+              backgroundColor: docStripBg,
+              borderColor: docStripBorder,
               opacity: pressed ? 0.9 : 1,
             },
           ]}
         >
-          <View style={[styles.docExtBadge, { backgroundColor: accent.fg }]}>
-            <Text style={styles.docExtText}>{ext}</Text>
+          <View style={[styles.waDocIconTile, isPdf ? styles.waDocIconPdf : styles.waDocIconNeutral]}>
+            <Text style={styles.waDocIconExtLabel} numberOfLines={1}>
+              {extShort}
+            </Text>
           </View>
-          <View style={styles.docBody}>
-            <Text style={[styles.docTitle, { color: accent.fg }]} numberOfLines={2}>
+          <View style={styles.waDocTextCol}>
+            <Text style={[styles.waDocFileName, { color: bubbleTextColor }]} numberOfLines={2}>
               {name}
             </Text>
-            <Text style={[styles.docHint, { color: mediaHintColor }]}>
-              {onOpenMediaPreview ? 'Tap to preview · hold to save' : 'Tap to download'}
+            <Text style={[styles.waDocSubline, { color: mediaHintColor }]}>
+              {onOpenMediaPreview ? 'Tap to preview · Hold to save' : 'Tap to download'}
             </Text>
           </View>
-          <Ionicons name={onOpenMediaPreview ? 'expand-outline' : 'document-attach-outline'} size={26} color={accent.fg} />
         </Pressable>
-        {caption}
+        {captionBlock}
       </View>
     );
   }
@@ -577,10 +672,12 @@ export function InboxBubbleRichContent({
 
   if (upper === 'TEMPLATE') {
     const raw = (m.text || '').replace(/^TEMPLATE:\s*/i, '').trim();
+    const tplPlain = stripHtmlForMessageBody(raw || m.text || '');
     return (
       <View style={blockRoot}>
         {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
         {quoted}
+        <BubbleLinkPreviews plain={tplPlain} sent={sent} />
         <View style={styles.templateCard}>
           <Ionicons name="mail-outline" size={20} color="#4338ca" />
           <View style={styles.templateText}>
@@ -599,10 +696,12 @@ export function InboxBubbleRichContent({
       m.text === '[ORDER]' || m.text === '[order]'
         ? 'Catalog order received (details may be unavailable for older messages).'
         : m.text || 'Order';
+    const orderPlain = stripHtmlForMessageBody(body);
     return (
       <View style={blockRoot}>
         {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
         {quoted}
+        <BubbleLinkPreviews plain={orderPlain} sent={sent} />
         <View style={styles.orderCard}>
           <Ionicons name="bag-handle-outline" size={20} color="#047857" />
           <Text style={styles.orderTitle}>Order</Text>
@@ -630,10 +729,12 @@ export function InboxBubbleRichContent({
   }
 
   // Default: plain / interactive / contact stored as text, etc.
+  const plain = stripHtmlForMessageBody(m.text || '');
   return (
     <View style={blockRoot}>
       {forwarded ? <ForwardedLabel color={mediaHintColor} /> : null}
       {quoted}
+      <BubbleLinkPreviews plain={plain} sent={sent} />
       <LinkifiedWhatsAppBubbleText
         messageId={m.id}
         rawHtml={m.text || ''}
@@ -649,14 +750,24 @@ const styles = StyleSheet.create({
   block: { gap: 6 },
   blockIncoming: { alignItems: 'flex-start' },
   blockOutgoing: { alignItems: 'flex-end' },
-  forwardedRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
-  forwardedText: { fontSize: 11, fontStyle: 'italic', fontWeight: '600' },
-  quotedBox: {
-    borderLeftWidth: 3,
-    paddingLeft: 8,
-    paddingVertical: 4,
+  /** Full bubble width so outgoing bubbles don’t pin this row to the trailing edge (WhatsApp: header reads L→R from bubble start). */
+  forwardedRow: {
+    alignSelf: 'stretch',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: 6,
     marginBottom: 4,
-    backgroundColor: 'rgba(148,163,184,0.12)',
+    paddingRight: 4,
+  },
+  forwardedText: { fontSize: 12, fontStyle: 'italic', fontWeight: '500', letterSpacing: 0.15 },
+  rowAlignLeadingEdge: { alignSelf: 'stretch' },
+  quotedBox: {
+    borderLeftWidth: 4,
+    paddingLeft: 10,
+    paddingVertical: 6,
+    marginBottom: 6,
+    backgroundColor: 'rgba(134,150,160,0.12)',
     borderRadius: 6,
   },
   quotedWho: { fontSize: 10, fontWeight: '700', marginBottom: 2 },
@@ -726,28 +837,50 @@ const styles = StyleSheet.create({
   mediaOpenText: { flex: 1, minWidth: 0 },
   mediaOpenTitle: { fontSize: 14, fontWeight: '700' },
   mediaOpenSub: { fontSize: 11, marginTop: 2 },
-  docCard: {
+  waDocRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 14,
+    paddingHorizontal: 10,
+    borderRadius: 12,
     borderWidth: StyleSheet.hairlineWidth,
-    maxWidth: 280,
+    maxWidth: 288,
+    minHeight: 58,
   },
-  docExtBadge: {
-    minWidth: 40,
-    paddingVertical: 6,
-    paddingHorizontal: 6,
+  waDocIconTile: {
+    width: 44,
+    height: 50,
     borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingHorizontal: 4,
   },
-  docExtText: { color: '#fff', fontSize: 10, fontWeight: '800' },
-  docBody: { flex: 1, minWidth: 0 },
-  docTitle: { fontSize: 14, fontWeight: '700' },
-  docHint: { fontSize: 11, marginTop: 2 },
+  waDocIconPdf: {
+    backgroundColor: '#ea4335',
+  },
+  waDocIconNeutral: {
+    backgroundColor: '#8696a0',
+  },
+  waDocIconExtLabel: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+    textAlign: 'center',
+  },
+  waDocTextCol: { flex: 1, minWidth: 0, justifyContent: 'center' },
+  waDocFileName: {
+    fontSize: 14.5,
+    fontWeight: '500',
+    lineHeight: 19,
+  },
+  waDocSubline: {
+    fontSize: 12,
+    marginTop: 3,
+    lineHeight: 16,
+    opacity: 0.92,
+  },
   locCard: {
     flexDirection: 'row',
     alignItems: 'center',

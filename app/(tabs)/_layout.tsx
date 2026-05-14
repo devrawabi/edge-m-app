@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 
+import { WhatsAppIncomingCallHost } from '@/components/WhatsAppIncomingCallHost';
 import { ThemeSwitcherHeaderButton } from '@/components/ThemeSwitcherHeaderButton';
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 import { useColorScheme } from '@/components/useColorScheme';
@@ -80,6 +81,7 @@ export default function TabLayout() {
 
   return (
     <>
+      <WhatsAppIncomingCallHost />
       <Tabs
         screenOptions={{
           tabBarActiveTintColor: Colors[colorScheme].tint,
@@ -93,9 +95,13 @@ export default function TabLayout() {
           headerStyle: {
             backgroundColor: headerBg,
             borderBottomWidth: 0,
-            elevation: 0,
-            shadowOpacity: 0,
-            shadowOffset: { width: 0, height: 0 },
+            ...(Platform.OS === 'web'
+              ? { boxShadow: 'none' }
+              : {
+                  elevation: 0,
+                  shadowOpacity: 0,
+                  shadowOffset: { width: 0, height: 0 },
+                }),
           },
           headerTitleStyle: { color: headerFg },
           headerTintColor: headerFg,

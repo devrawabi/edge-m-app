@@ -40,6 +40,12 @@
       "expo-router",
       "expo-secure-store",
       [
+        "expo-contacts",
+        {
+          "contactsPermission": "Allow RawabiEdge to save shared contact cards to your address book."
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Allow RawabiEdge to attach photos when messaging customers.",

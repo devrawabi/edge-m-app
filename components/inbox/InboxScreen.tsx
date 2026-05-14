@@ -1,6 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import * as Clipboard from 'expo-clipboard';
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
@@ -30,20 +32,27 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { InboxAttachmentSheet } from '@/components/inbox/InboxAttachmentSheet';
 import { InboxBubbleRichContent } from '@/components/inbox/InboxBubbleRichContent';
+import { InboxChatRowContextMenu, type ChatRowContextAction } from '@/components/inbox/InboxChatRowContextMenu';
+import { InboxMessageContextMenu, type MessageRowContextAction } from '@/components/inbox/InboxMessageContextMenu';
+import type { ContactCardActionPayload } from '@/components/inbox/InboxContactBubble';
 import { InboxFullScreenMediaModal } from '@/components/inbox/InboxFullScreenMediaModal';
 import { useColorScheme } from '@/components/useColorScheme';
 import { getApiBaseUrl } from '@/constants/Config';
 import { useSessionContext } from '@/context/SessionContext';
 import { getInboxUiTheme } from '@/lib/inbox-theme';
+import { saveContactToDeviceAddressBook } from '@/lib/inbox-contact-device';
+import { ContactNotOnWhatsAppError, openInboxChatFromContactPhone } from '@/lib/inbox-open-chat-from-contact';
 import { parseBubbleCta, parseBubblePoll } from '@/lib/inbox-bubble-extras';
 import { stickerUrlFromServerPath } from '@/lib/sticker-assets';
 import { api } from '@/lib/http';
-import { inboxMergeShouldResort, mapSocketPayloadToInboxMessage, realtimeMessageAlreadyInList } from '@/lib/inbox-realtime';
+import { inboxMergeShouldResort, mergeSocketMessageIntoList } from '@/lib/inbox-realtime';
 import { avatarHueFromId, avatarInitials, formatChatTime, formatMessageDayLabel, stripHtmlPreview } from '@/lib/inbox-format';
 import { LinkifiedWhatsAppBubbleText, type WhatsAppBubblePalette } from '@/lib/whatsapp-message-text-rn';
 import { sortInboxChatsList } from '@/lib/inbox-sort';
 import { subscribeInboxHeaderNudge } from '@/lib/inbox-header-nudge';
+import { mapContactApiToInboxChat } from '@/lib/map-contact-api-to-inbox-chat';
 import { emitSubscribeChat, getActiveSocket } from '@/lib/socketClient';
+import { useInboxLivePolling } from '@/hooks/useInboxLivePolling';
 import type { InboxChat, InboxListResponse, InboxMessage, MessagesPageResponse } from '@/types/inbox';
 import type { InboxMediaPreviewRequest } from '@/types/inbox-media-preview';
 
@@ -90,6 +99,23 @@ const COMPOSER_QUICK_EMOJIS = [
 /** Same tile as web inbox `url('/wa-wallpaper.png')` + `background-repeat: repeat`. */
 const WA_WALLPAPER = require('@/assets/images/wa-wallpaper.png');
 
+/** Mirror web inbox `inboxCanAssignContactToBranch` (role-access). */
+function inboxCanAssignContactToBranch(role: string | undefined | null): boolean {
+  if (role === 'SUPER_ADMIN' || role === 'COMPANY_SUPER_ADMIN') return true;
+  return role === 'AGENT' || role === 'BRANCH_ADMIN';
+}
+
+function branchBadgeLabel(
+  branch: { shortCode?: string | null; name?: string; displayName?: string | null } | null | undefined,
+): string | null {
+  if (!branch) return null;
+  const sc = (branch.shortCode ?? '').trim();
+  if (sc) return sc;
+  const n = ((branch.displayName ?? branch.name) ?? '').trim();
+  if (!n) return null;
+  return n.length > 18 ? `${n.slice(0, 16)}…` : n;
+}
+
 function inferMediaMessageType(mime: string, asDocument: boolean): string {
   if (asDocument) return 'document';
   const m = (mime || '').toLowerCase();
@@ -115,13 +141,19 @@ function mediaUrlFor(profileImage: string | null): string | null {
   return `${base}/api/media?mediaId=${encodeURIComponent(profileImage)}`;
 }
 
-function statusTicks(status: string, sent: boolean): string {
-  if (!sent) return '';
+function messageMediaDownloadUrl(mediaUrl: string | null | undefined): string | null {
+  if (!mediaUrl) return null;
+  if (mediaUrl.startsWith('http') || mediaUrl.startsWith('data:')) return mediaUrl;
+  const base = getApiBaseUrl().replace(/\/$/, '');
+  return `${base}/api/media?mediaId=${encodeURIComponent(mediaUrl)}`;
+}
+
+function outboundReceiptIcons(status: string): 'sent' | 'delivered' | 'read' | 'none' {
   const s = status.toUpperCase();
-  if (s === 'READ') return '✓✓';
-  if (s === 'DELIVERED') return '✓✓';
-  if (s === 'SENT') return '✓';
-  return '';
+  if (s === 'READ') return 'read';
+  if (s === 'DELIVERED') return 'delivered';
+  if (s === 'SENT') return 'sent';
+  return 'none';
 }
 
 /** Max height for filter strip collapse (single horizontal chip row). */
@@ -206,8 +238,16 @@ function useCollapsingFilterBar() {
   return { onScroll, animatedWrapStyle, reset };
 }
 
+/** API may still return unread before mark-read finishes; keep the open thread at 0 in the list. */
+function applyOpenThreadUnreadToChats(rows: InboxChat[], openId: string | null): InboxChat[] {
+  if (!openId) return rows;
+  return rows.map((c) => (c.id === openId ? { ...c, unread: 0 } : c));
+}
+
 export function InboxScreen() {
   const session = useSessionContext();
+  const router = useRouter();
+  const params = useLocalSearchParams<{ openContactId?: string | string[] }>();
   const selectedIdRef = useRef<string | null>(null);
   const chatsRef = useRef<InboxChat[]>([]);
   const loadingMoreChatsRef = useRef(false);
@@ -223,6 +263,14 @@ export function InboxScreen() {
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const [tagsModalVisible, setTagsModalVisible] = useState(false);
   const [archivedCountHint, setArchivedCountHint] = useState<number | null>(null);
+  const [listContextMenuChat, setListContextMenuChat] = useState<InboxChat | null>(null);
+  const [tagPickerChat, setTagPickerChat] = useState<InboxChat | null>(null);
+  const [branchesForAssign, setBranchesForAssign] = useState<
+    { id: string; name: string; shortCode?: string | null; displayName?: string | null }[]
+  >([]);
+  const [favoriteContactIds, setFavoriteContactIds] = useState<Set<string>>(() => new Set());
+  const [blockedContactIds, setBlockedContactIds] = useState<Set<string>>(() => new Set());
+  const suppressChatRowPressRef = useRef(false);
 
   const [selectedChat, setSelectedChat] = useState<InboxChat | null>(null);
   const [messages, setMessages] = useState<InboxMessage[]>([]);
@@ -238,20 +286,26 @@ export function InboxScreen() {
   const [mediaPreviewVisible, setMediaPreviewVisible] = useState(false);
   const [mediaPreviewRequest, setMediaPreviewRequest] = useState<InboxMediaPreviewRequest | null>(null);
   const [threadKeyboardOpen, setThreadKeyboardOpen] = useState(false);
+  const [contactCardBusyMessageId, setContactCardBusyMessageId] = useState<string | null>(null);
+  const [messageMenuMessage, setMessageMenuMessage] = useState<InboxMessage | null>(null);
+  const [replyToMessage, setReplyToMessage] = useState<InboxMessage | null>(null);
+  const [messageMultiSelectMode, setMessageMultiSelectMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
 
   const resyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mailboxRef = useRef<Mailbox>(mailbox);
   mailboxRef.current = mailbox;
 
   chatsRef.current = chats;
-
-  useEffect(() => {
-    selectedIdRef.current = selectedChat?.id ?? null;
-  }, [selectedChat?.id]);
+  selectedIdRef.current = selectedChat?.id ?? null;
 
   useEffect(() => {
     setMediaPreviewVisible(false);
     setMediaPreviewRequest(null);
+    setMessageMenuMessage(null);
+    setMessageMultiSelectMode(false);
+    setSelectedMessageIds([]);
+    setReplyToMessage(null);
   }, [selectedChat?.id]);
 
   useEffect(() => {
@@ -289,8 +343,12 @@ export function InboxScreen() {
           const res = await api().get(`/api/inbox?${q}`);
           if (res.status !== 200 || !res.data?.chats) return;
           const data = res.data as InboxListResponse;
-          setChats(sortInboxChatsList(data.chats));
+          const openId = selectedIdRef.current;
+          setChats(sortInboxChatsList(applyOpenThreadUnreadToChats(data.chats ?? [], openId)));
           setHasMoreChats(data.hasMore ?? false);
+          if (openId) {
+            setSelectedChat((s) => (s && s.id === openId ? { ...s, unread: 0 } : s));
+          }
           if (mailboxRef.current === 'active' && typeof data.archivedCount === 'number') {
             setArchivedCountHint(data.archivedCount);
           }
@@ -300,6 +358,14 @@ export function InboxScreen() {
       })();
     }, 450);
   }, [debouncedSearch]);
+
+  useInboxLivePolling({
+    loggedIn: session.status === 'loggedIn',
+    selectedChatId: selectedChat?.id ?? null,
+    hasMoreMessages,
+    setMessages,
+    scheduleFullResync,
+  });
 
   const fetchChatsPage = useCallback(async (offset: number, replace: boolean) => {
     const q = new URLSearchParams({
@@ -315,16 +381,24 @@ export function InboxScreen() {
     }
     const data = res.data as InboxListResponse;
     const rows = data.chats ?? [];
+    const openId = selectedIdRef.current;
+    const rowsAdjusted = applyOpenThreadUnreadToChats(rows, openId);
     if (replace) {
-      setChats(sortInboxChatsList(rows));
+      setChats(sortInboxChatsList(rowsAdjusted));
+      if (openId) {
+        setSelectedChat((s) => (s && s.id === openId ? { ...s, unread: 0 } : s));
+      }
       if (mailbox === 'active' && typeof data.archivedCount === 'number') {
         setArchivedCountHint(data.archivedCount);
       }
     } else {
       const prev = chatsRef.current;
-      const merged = [...prev, ...rows];
+      const merged = [...prev, ...rowsAdjusted];
       const dedup = Array.from(new Map(merged.map((c) => [c.id, c])).values());
-      setChats(sortInboxChatsList(dedup));
+      setChats(sortInboxChatsList(applyOpenThreadUnreadToChats(dedup, openId)));
+      if (openId) {
+        setSelectedChat((s) => (s && s.id === openId ? { ...s, unread: 0 } : s));
+      }
     }
     setHasMoreChats(data.hasMore ?? false);
   }, [debouncedSearch, mailbox]);
@@ -383,8 +457,13 @@ export function InboxScreen() {
       const data = res.data as MessagesPageResponse;
       setMessages(data.messages ?? []);
       setHasMoreMessages(data.hasMore ?? false);
-      await api().post(`/api/inbox/read?chatId=${encodeURIComponent(chatId)}`);
       setChats((prev) => prev.map((c) => (c.id === chatId ? { ...c, unread: 0 } : c)));
+      setSelectedChat((s) => (s && s.id === chatId ? { ...s, unread: 0 } : s));
+      try {
+        await api().post(`/api/inbox/read?chatId=${encodeURIComponent(chatId)}`);
+      } catch {
+        /* non-fatal — UI already shows read */
+      }
     } catch (e) {
       Alert.alert('Messages', e instanceof Error ? e.message : 'Failed to load thread');
     } finally {
@@ -422,6 +501,50 @@ export function InboxScreen() {
     emitSubscribeChat(selectedChat.id);
   }, [selectedChat?.id, loadMessages]);
 
+  const openContactIdRaw = params.openContactId;
+  const openContactIdParam = Array.isArray(openContactIdRaw) ? openContactIdRaw[0] : openContactIdRaw;
+
+  useEffect(() => {
+    const id = typeof openContactIdParam === 'string' ? openContactIdParam.trim() : '';
+    if (!id) return;
+
+    const found = chatsRef.current.find((c) => c.id === id);
+    if (found) {
+      setChats((prev) => prev.map((c) => (c.id === id ? { ...c, unread: 0 } : c)));
+      setSelectedChat({ ...found, unread: 0 });
+      queueMicrotask(() => router.setParams({ openContactId: undefined }));
+      return;
+    }
+
+    if (loadingChats) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await api().get(`/api/contacts/${encodeURIComponent(id)}`);
+        if (cancelled) return;
+        if (res.status === 200 && res.data) {
+          const chat = mapContactApiToInboxChat(res.data as Record<string, unknown>);
+          const openChat = { ...chat, unread: 0 };
+          setChats((prev) => {
+            const exists = prev.find((x) => x.id === openChat.id);
+            if (exists) return prev.map((x) => (x.id === openChat.id ? { ...x, ...openChat } : x));
+            return sortInboxChatsList([openChat, ...prev]);
+          });
+          setSelectedChat(openChat);
+        }
+      } catch {
+        /* ignore */
+      } finally {
+        if (!cancelled) queueMicrotask(() => router.setParams({ openContactId: undefined }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [openContactIdParam, loadingChats, router]);
+
   useEffect(() => {
     if (session.status !== 'loggedIn') return;
     const sock = getActiveSocket();
@@ -456,12 +579,44 @@ export function InboxScreen() {
     };
 
     const handleNewMessage = (raw: Record<string, unknown>) => {
-      const chatId = raw.chatId != null ? String(raw.chatId) : '';
-      if (!chatId || chatId !== selectedIdRef.current) return;
-      setMessages((prev) => {
-        if (realtimeMessageAlreadyInList(prev, raw)) return prev;
-        return [...prev, mapSocketPayloadToInboxMessage(raw)];
-      });
+      const roomFromPayload = raw.chatId != null ? String(raw.chatId) : '';
+      const sel = selectedIdRef.current;
+      if (roomFromPayload && sel && roomFromPayload !== sel) return;
+      setMessages((prev) => mergeSocketMessageIntoList(prev, raw));
+
+      const openId = selectedIdRef.current;
+      const threadId = roomFromPayload || openId || '';
+      if (threadId && openId && threadId === openId) {
+        const preview =
+          raw.content != null
+            ? String(raw.content)
+            : raw.type != null && String(raw.type).toUpperCase() !== 'TEXT'
+              ? `[${String(raw.type)}]`
+              : '';
+        const timeStr = raw.createdAt != null ? String(raw.createdAt) : undefined;
+        setChats((prev) =>
+          prev.map((c) =>
+            c.id === threadId
+              ? {
+                  ...c,
+                  unread: 0,
+                  ...(preview ? { lastMessage: preview } : {}),
+                  ...(timeStr ? { time: timeStr } : {}),
+                }
+              : c,
+          ),
+        );
+        setSelectedChat((s) =>
+          s && s.id === threadId
+            ? {
+                ...s,
+                unread: 0,
+                ...(preview ? { lastMessage: preview } : {}),
+                ...(timeStr ? { time: timeStr } : {}),
+              }
+            : s,
+        );
+      }
     };
 
     const handleStatus = (data: Record<string, unknown>) => {
@@ -499,14 +654,63 @@ export function InboxScreen() {
     };
   }, [session.status, scheduleFullResync]);
 
+  const showAssignBranchMenu = useMemo(() => {
+    if (session.status !== 'loggedIn') return false;
+    return inboxCanAssignContactToBranch(session.me.role);
+  }, [session]);
+
+  useEffect(() => {
+    if (session.status !== 'loggedIn') {
+      setBranchesForAssign([]);
+      return;
+    }
+    if (!showAssignBranchMenu || !session.me.companyId) {
+      setBranchesForAssign([]);
+      return;
+    }
+    let cancelled = false;
+    const q = new URLSearchParams();
+    q.set('companyId', session.me.companyId);
+    void (async () => {
+      try {
+        const r = await api().get(`/api/admin/branches?${q.toString()}`);
+        if (cancelled) return;
+        if (r.status !== 200 || !Array.isArray(r.data)) {
+          setBranchesForAssign([]);
+          return;
+        }
+        let mapped = (
+          r.data as { id: string; name: string; shortCode?: string | null; displayName?: string | null }[]
+        ).map((b) => ({
+          id: b.id,
+          name: b.name,
+          shortCode: b.shortCode,
+          displayName: b.displayName,
+        }));
+        const role = session.me.role;
+        const userBranchId = session.me.branchId;
+        if (role === 'BRANCH_ADMIN' && userBranchId) {
+          mapped = mapped.filter((b) => b.id === userBranchId);
+        }
+        setBranchesForAssign(mapped);
+      } catch {
+        if (!cancelled) setBranchesForAssign([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session, showAssignBranchMenu]);
+
   const filteredChats = useMemo(() => {
     return chats.filter((c) => {
+      if (blockedContactIds.has(c.id)) return false;
       if (!chatMatchesTagFilter(c, tagFilter)) return false;
       if (listFilter === 'unread') return (c.unread ?? 0) > 0;
       if (listFilter === 'flagged') return !!c.isPinned;
       return true;
     });
-  }, [chats, listFilter, tagFilter]);
+  }, [chats, listFilter, tagFilter, blockedContactIds]);
 
   const availableTags = useMemo(() => {
     const set = new Set<string>();
@@ -520,6 +724,217 @@ export function InboxScreen() {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [chats]);
 
+  const handleChatListMenuAction = useCallback(
+    async (action: ChatRowContextAction, chat: InboxChat, extra?: string) => {
+      const id = chat.id;
+      switch (action) {
+        case 'assign_branch': {
+          const payload =
+            extra === '__clear__' ? { branchId: null as null } : extra ? { branchId: extra } : null;
+          if (!payload) break;
+          try {
+            const res = await api().patch(`/api/contacts/${id}`, payload);
+            if (res.status >= 400) break;
+            const updated = res.data as { branchId?: string | null; branchLabel?: string | null };
+            const bid = updated.branchId ?? null;
+            const branchLabel =
+              bid != null
+                ? (updated.branchLabel ??
+                  branchBadgeLabel(branchesForAssign.find((b) => b.id === bid) ?? null))
+                : null;
+            setChats((prev) => prev.map((c) => (c.id === id ? { ...c, branchId: bid, branchLabel } : c)));
+            setSelectedChat((prev) => (prev?.id === id && prev ? { ...prev, branchId: bid, branchLabel } : prev));
+          } catch (e) {
+            console.error(e);
+          }
+          break;
+        }
+        case 'tag_lead':
+          if (extra) {
+            try {
+              const res = await api().patch(`/api/contacts/${id}`, { tag: extra });
+              if (res.status >= 400) break;
+              const updated = res.data as { tag?: string };
+              setChats((prev) => prev.map((c) => (c.id === id ? { ...c, tag: updated.tag } : c)));
+              setSelectedChat((prev) => (prev?.id === id && prev ? { ...prev, tag: updated.tag } : prev));
+            } catch (e) {
+              console.error(e);
+            }
+          }
+          break;
+        case 'mark_unread':
+          try {
+            const res = await api().patch(`/api/contacts/${id}`, { unreadCount: 1 });
+            if (res.status >= 400) break;
+            setChats((prev) => prev.map((c) => (c.id === id ? { ...c, unread: 1 } : c)));
+          } catch (e) {
+            console.error(e);
+          }
+          break;
+        case 'pin':
+          try {
+            const res = await api().patch(`/api/contacts/${id}`, { isPinned: !chat.isPinned });
+            if (res.status >= 400) break;
+            const updated = res.data as { isPinned?: boolean; pinnedAt?: string | null };
+            setChats((prev) =>
+              sortInboxChatsList(
+                prev.map((c) =>
+                  c.id === id ? { ...c, isPinned: updated.isPinned, pinnedAt: updated.pinnedAt } : c,
+                ),
+              ),
+            );
+            setSelectedChat((prev) =>
+              prev?.id === id && prev
+                ? { ...prev, isPinned: updated.isPinned, pinnedAt: updated.pinnedAt }
+                : prev,
+            );
+          } catch (e) {
+            console.error(e);
+          }
+          break;
+        case 'archive':
+          try {
+            const res = await api().patch(`/api/contacts/${id}`, { isArchived: true });
+            if (res.status >= 400) break;
+            setChats((prev) => prev.filter((c) => c.id !== id));
+            setArchivedCountHint((prev) => (typeof prev === 'number' ? prev + 1 : prev));
+            if (selectedChat?.id === id) setSelectedChat(null);
+          } catch (e) {
+            console.error(e);
+          }
+          break;
+        case 'unarchive':
+          try {
+            const res = await api().patch(`/api/contacts/${id}`, { isArchived: false });
+            if (res.status >= 400) break;
+            setChats((prev) => prev.filter((c) => c.id !== id));
+            setArchivedCountHint((prev) => (typeof prev === 'number' ? Math.max(0, prev - 1) : prev));
+            if (selectedChat?.id === id) setSelectedChat(null);
+          } catch (e) {
+            console.error(e);
+          }
+          break;
+        case 'favorite':
+          setFavoriteContactIds((prev) => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+          });
+          break;
+        case 'block':
+          setBlockedContactIds((prev) => new Set(prev).add(id));
+          if (selectedChat?.id === id) setSelectedChat(null);
+          break;
+        case 'delete_chat': {
+          const runDelete = async () => {
+            try {
+              const res = await api().delete('/api/contacts', { params: { id } });
+              if (res.status >= 400) {
+                const err = typeof (res.data as { error?: string })?.error === 'string'
+                  ? (res.data as { error: string }).error
+                  : `HTTP ${res.status}`;
+                Alert.alert('Delete chat', err);
+                return;
+              }
+              setChats((prev) => prev.filter((c) => c.id !== id));
+              if (selectedChat?.id === id) {
+                setSelectedChat(null);
+                setMessages([]);
+              }
+            } catch (e) {
+              console.error(e);
+              Alert.alert('Delete chat', 'Failed to delete chat');
+            }
+          };
+          const title = 'Delete chat';
+          const message =
+            'Delete this chat and all messages from the database? This cannot be undone.';
+          if (Platform.OS === 'web' && typeof window !== 'undefined') {
+            if (window.confirm(`${title}\n\n${message}`)) void runDelete();
+            break;
+          }
+          Alert.alert(title, message, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Delete', style: 'destructive', onPress: () => void runDelete() },
+          ]);
+          break;
+        }
+        case 'clear_chat': {
+          const runClear = async () => {
+            try {
+              const res = await api().delete('/api/messages', { params: { chatId: id } });
+              if (res.status >= 400) {
+                const err = typeof (res.data as { error?: string })?.error === 'string'
+                  ? (res.data as { error: string }).error
+                  : `HTTP ${res.status}`;
+                Alert.alert('Clear chat', err);
+                return;
+              }
+              if (selectedChat?.id === id) setMessages([]);
+              setChats((prev) =>
+                prev.map((c) => (c.id === id ? { ...c, lastMessage: 'No messages yet', time: c.time } : c)),
+              );
+            } catch (e) {
+              console.error(e);
+              Alert.alert('Clear chat', 'Failed to clear messages');
+            }
+          };
+          const title = 'Clear chat';
+          const message = 'Clear all messages in this chat? This cannot be undone.';
+          if (Platform.OS === 'web' && typeof window !== 'undefined') {
+            if (window.confirm(`${title}\n\n${message}`)) void runClear();
+            break;
+          }
+          Alert.alert(title, message, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Clear', style: 'destructive', onPress: () => void runClear() },
+          ]);
+          break;
+        }
+        default:
+          break;
+      }
+    },
+    [branchesForAssign, selectedChat?.id],
+  );
+
+  const onChatRowContextSelect = useCallback(
+    (action: ChatRowContextAction, chat: InboxChat, extra?: string) => {
+      if (action === 'tag') {
+        setTagPickerChat(chat);
+        return;
+      }
+      void handleChatListMenuAction(action, chat, extra);
+    },
+    [handleChatListMenuAction],
+  );
+
+  const applyContactTagFromPicker = useCallback(
+    async (tag: string) => {
+      const chat = tagPickerChat;
+      if (!chat) return;
+      try {
+        const res = await api().patch(`/api/contacts/${chat.id}`, { tag });
+        if (res.status >= 400) {
+          const err = typeof (res.data as { error?: string })?.error === 'string'
+            ? (res.data as { error: string }).error
+            : `HTTP ${res.status}`;
+          Alert.alert('Tag', err);
+          return;
+        }
+        const updated = res.data as { tag?: string };
+        setChats((prev) => prev.map((x) => (x.id === chat.id ? { ...x, tag: updated.tag } : x)));
+        setSelectedChat((prev) => (prev?.id === chat.id && prev ? { ...prev, tag: updated.tag } : prev));
+      } catch (e) {
+        Alert.alert('Tag', e instanceof Error ? e.message : 'Could not update tag');
+      } finally {
+        setTagPickerChat(null);
+      }
+    },
+    [tagPickerChat],
+  );
+
   const displayMessages = useMemo(() => [...messages].reverse(), [messages]);
 
   const refreshThreadMessages = useCallback(async () => {
@@ -529,6 +944,151 @@ export function InboxScreen() {
       setMessages((r.data as MessagesPageResponse).messages ?? []);
     }
   }, [selectedChat?.id]);
+
+  const toggleMessageSelection = useCallback((messageId: string) => {
+    setSelectedMessageIds((prev) =>
+      prev.includes(messageId) ? prev.filter((id) => id !== messageId) : [...prev, messageId],
+    );
+  }, []);
+
+  const handleMessageMenuAction = useCallback(
+    async (action: MessageRowContextAction, msg: InboxMessage) => {
+      const plain = stripHtmlPreview(msg.text || '');
+      switch (action) {
+        case 'reply':
+          setReplyToMessage(msg);
+          break;
+        case 'select':
+          setMessageMultiSelectMode(true);
+          setSelectedMessageIds((prev) => (prev.includes(msg.id) ? prev : [...prev, msg.id]));
+          break;
+        case 'forward':
+          Alert.alert('Forward', 'Message forwarding is available in the web inbox.');
+          break;
+        case 'copy':
+          try {
+            await Clipboard.setStringAsync(plain);
+          } catch (e) {
+            Alert.alert('Copy', e instanceof Error ? e.message : 'Could not copy');
+          }
+          break;
+        case 'star':
+          try {
+            const res = await api().patch(`/api/messages/${msg.id}`, { isStarred: !msg.isStarred });
+            if (res.status >= 400) break;
+            setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, isStarred: !m.isStarred } : m)));
+          } catch (e) {
+            console.error(e);
+          }
+          break;
+        case 'pin':
+          try {
+            const res = await api().patch(`/api/messages/${msg.id}`, { isPinned: !msg.isPinned });
+            if (res.status >= 400) break;
+            setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, isPinned: !m.isPinned } : m)));
+          } catch (e) {
+            console.error(e);
+          }
+          break;
+        case 'translate':
+          try {
+            const res = await api().post('/api/translate', { text: plain });
+            if (res.status >= 400) {
+              const err = typeof (res.data as { error?: string })?.error === 'string'
+                ? (res.data as { error: string }).error
+                : `HTTP ${res.status}`;
+              Alert.alert('Translate', err);
+              break;
+            }
+            const translatedText = (res.data as { translatedText?: string }).translatedText;
+            if (typeof translatedText === 'string') {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === msg.id ? { ...m, text: `${msg.text}\n\n--- Translated ---\n${translatedText}` } : m,
+                ),
+              );
+            }
+          } catch (e) {
+            console.error(e);
+            Alert.alert('Translate', 'Translation failed');
+          }
+          break;
+        case 'ai-response':
+          try {
+            const res = await api().post('/api/ai/response', { text: plain });
+            const data = res.data as { response?: string; error?: string };
+            if (res.status >= 400 || data.response == null) {
+              Alert.alert('AI response', data.error || 'Failed to generate response');
+              break;
+            }
+            setComposer((c) => (c.trim() ? `${c.trim()}\n${data.response}` : data.response!));
+          } catch (e) {
+            console.error(e);
+            Alert.alert('AI response', 'Request failed');
+          }
+          break;
+        case 'download': {
+          const url = messageMediaDownloadUrl(msg.mediaUrl);
+          if (!url) {
+            Alert.alert('Download', 'No media on this message.');
+            break;
+          }
+          try {
+            if (Platform.OS === 'web' && typeof window !== 'undefined') {
+              window.open(url, '_blank', 'noopener,noreferrer');
+            } else {
+              await Linking.openURL(url);
+            }
+          } catch (e) {
+            Alert.alert('Download', e instanceof Error ? e.message : 'Could not open link');
+          }
+          break;
+        }
+        case 'info':
+          Alert.alert(
+            'Message',
+            `ID: ${msg.waId || msg.id}\nStatus: ${msg.status}\nTime: ${String(msg.time)}`,
+          );
+          break;
+        case 'delete': {
+          const runDelete = async () => {
+            try {
+              const res = await api().delete(`/api/messages/${msg.id}`);
+              if (res.status >= 400) {
+                const err = typeof (res.data as { error?: string })?.error === 'string'
+                  ? (res.data as { error: string }).error
+                  : `HTTP ${res.status}`;
+                Alert.alert('Delete', err);
+                return;
+              }
+              setMessages((prev) => prev.filter((m) => m.id !== msg.id));
+            } catch (e) {
+              console.error(e);
+              Alert.alert('Delete', 'Failed to delete message');
+            }
+          };
+          const title = 'Delete message';
+          const message = 'Delete this message?';
+          if (Platform.OS === 'web' && typeof window !== 'undefined') {
+            if (window.confirm(`${title}\n\n${message}`)) void runDelete();
+            break;
+          }
+          Alert.alert(title, message, [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Delete', style: 'destructive', onPress: () => void runDelete() },
+          ]);
+          break;
+        }
+        default:
+          break;
+      }
+    },
+    [],
+  );
+
+  const onMessageMenuSelect = useCallback((action: MessageRowContextAction, msg: InboxMessage) => {
+    void handleMessageMenuAction(action, msg);
+  }, [handleMessageMenuAction]);
 
   const openMediaPreview = useCallback((req: InboxMediaPreviewRequest) => {
     setMediaPreviewRequest(req);
@@ -545,19 +1105,31 @@ export function InboxScreen() {
     if (!selectedChat?.id || !text || sending || uploadingFile) return;
     setSending(true);
     try {
-      const res = await api().post('/api/messages', { contactId: selectedChat.id, content: text, type: 'text' });
+      const payload: Record<string, unknown> = {
+        contactId: selectedChat.id,
+        content: text,
+        type: 'text',
+      };
+      if (replyToMessage) {
+        payload.quotedMessageId = replyToMessage.id;
+        payload.quotedMessage = {
+          text: stripHtmlPreview(replyToMessage.text || '').slice(0, 500),
+        };
+      }
+      const res = await api().post('/api/messages', payload);
       if (res.status >= 400) {
         const err = typeof res.data?.error === 'string' ? res.data.error : `HTTP ${res.status}`;
         throw new Error(err);
       }
       setComposer('');
+      setReplyToMessage(null);
       await refreshThreadMessages();
     } catch (e) {
       Alert.alert('Send failed', e instanceof Error ? e.message : 'Could not send');
     } finally {
       setSending(false);
     }
-  }, [composer, selectedChat?.id, sending, uploadingFile, refreshThreadMessages]);
+  }, [composer, selectedChat?.id, sending, uploadingFile, refreshThreadMessages, replyToMessage]);
 
   const uploadAndSendMedia = useCallback(
     async (file: { uri: string; name: string; mime: string; webFile?: File }, asDocument: boolean) => {
@@ -821,11 +1393,57 @@ export function InboxScreen() {
     void Linking.openURL(`tel:${digits}`);
   }, []);
 
+  const handleContactOpenChat = useCallback(async (p: ContactCardActionPayload) => {
+    setContactCardBusyMessageId(p.messageId);
+    try {
+      const chat = await openInboxChatFromContactPhone({
+        displayName: p.displayName,
+        phoneForLookup: p.phoneForLookup,
+      });
+      const openChat = { ...chat, unread: 0 };
+      setChats((prev) => {
+        const existing = prev.find((x) => x.id === openChat.id);
+        if (existing) return prev.map((x) => (x.id === openChat.id ? { ...x, ...openChat } : x));
+        return sortInboxChatsList([openChat, ...prev]);
+      });
+      setSelectedChat(openChat);
+    } catch (e) {
+      if (e instanceof ContactNotOnWhatsAppError) {
+        Alert.alert('WhatsApp', 'This number is not available on WhatsApp.');
+      } else {
+        Alert.alert('Contact', e instanceof Error ? e.message : 'Something went wrong.');
+      }
+    } finally {
+      setContactCardBusyMessageId(null);
+    }
+  }, []);
+
+  const handleContactSaveToDevice = useCallback(async (p: ContactCardActionPayload) => {
+    setContactCardBusyMessageId(p.messageId);
+    try {
+      await saveContactToDeviceAddressBook(p.displayName, p.phoneForLookup);
+    } catch (e) {
+      Alert.alert('Contacts', e instanceof Error ? e.message : 'Could not save to your address book.');
+    } finally {
+      setContactCardBusyMessageId(null);
+    }
+  }, []);
+
   const activeOnline = useMemo(() => chats.filter((c) => c.online).length, [chats]);
 
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
   const t = useMemo(() => getInboxUiTheme(colorScheme === 'dark'), [colorScheme]);
+  const rowMenuTheme = useMemo(
+    () => ({
+      listBg: t.listBg,
+      rowHi: t.rowHi,
+      rowMuted: t.rowMuted,
+      chatDivider: t.chatDivider,
+      danger: colorScheme === 'dark' ? '#f87171' : '#dc2626',
+    }),
+    [t, colorScheme],
+  );
   const waBubblePalette = useMemo<WhatsAppBubblePalette>(() => {
     const dark = colorScheme === 'dark';
     return {
@@ -849,7 +1467,7 @@ export function InboxScreen() {
   const showCallHistory = useCallback(() => {
     Alert.alert(
       'Call history',
-      'WhatsApp Cloud voice and full call history are available in the web inbox. In a chat, use the phone button to place a PSTN call.',
+      'Voice calls are announced in real time in this app. Full WebRTC answer/decline and call logs are in the web inbox; from a thread you can still place a normal phone (PSTN) call.',
     );
   }, []);
 
@@ -973,12 +1591,37 @@ export function InboxScreen() {
           keyboardVerticalOffset={Platform.OS === 'ios' ? 8 : 0}
         >
           <ImageBackground source={WA_WALLPAPER} style={styles.threadMessageBg} resizeMode="repeat">
-            {loadingMessages ? (
-              <View style={styles.threadLoading}>
-                <ActivityIndicator color={t.threadLoadingDot} />
-              </View>
-            ) : (
-              <FlatList
+            <View style={styles.threadListWrap}>
+              {messageMultiSelectMode ? (
+                <View
+                  style={[
+                    styles.msgSelectBanner,
+                    {
+                      backgroundColor: t.threadTopBar,
+                      borderBottomColor: t.threadTopBarBorder,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.msgSelectBannerText, { color: t.threadTitle }]}>
+                    {selectedMessageIds.length} selected — tap messages
+                  </Text>
+                  <Pressable
+                    onPress={() => {
+                      setMessageMultiSelectMode(false);
+                      setSelectedMessageIds([]);
+                    }}
+                    hitSlop={8}
+                  >
+                    <Text style={[styles.msgSelectBannerDone, { color: t.threadCallIcon }]}>Done</Text>
+                  </Pressable>
+                </View>
+              ) : null}
+              {loadingMessages ? (
+                <View style={styles.threadLoading}>
+                  <ActivityIndicator color={t.threadLoadingDot} />
+                </View>
+              ) : (
+                <FlatList
                 data={displayMessages}
                 inverted
                 style={styles.threadMessageList}
@@ -999,6 +1642,12 @@ export function InboxScreen() {
                   const d = new Date(m.time);
                   const prev = displayMessages[index + 1];
                   const prevD = prev ? new Date(prev.time) : null;
+                  const sameSenderCluster =
+                    !!prev &&
+                    prev.sent === m.sent &&
+                    !!prevD &&
+                    !Number.isNaN(prevD.getTime()) &&
+                    d.toDateString() === prevD.toDateString();
                   const showDay =
                     !prevD ||
                     Number.isNaN(prevD.getTime()) ||
@@ -1019,13 +1668,31 @@ export function InboxScreen() {
                           </View>
                         </View>
                       ) : null}
-                      <View style={[styles.bubbleRow, m.sent ? styles.bubbleRowOut : styles.bubbleRowIn]}>
-                        <View
-                          style={[
+                      <View
+                        style={[
+                          styles.bubbleRow,
+                          m.sent ? styles.bubbleRowOut : styles.bubbleRowIn,
+                          sameSenderCluster ? styles.bubbleRowGrouped : styles.bubbleRowLoose,
+                        ]}
+                      >
+                        <Pressable
+                          delayLongPress={500}
+                          onLongPress={() => setMessageMenuMessage(m)}
+                          onPress={
+                            messageMultiSelectMode ? () => toggleMessageSelection(m.id) : undefined
+                          }
+                          style={({ pressed }) => [
                             styles.bubble,
+                            colorScheme !== 'dark' && styles.bubbleShadowLight,
                             m.sent
                               ? [styles.bubbleOut, { backgroundColor: t.bubbleOut }]
                               : [styles.bubbleIn, { backgroundColor: t.bubbleIn }],
+                            messageMultiSelectMode &&
+                              selectedMessageIds.includes(m.id) && {
+                                borderWidth: 2,
+                                borderColor: t.mediaHint,
+                              },
+                            messageMultiSelectMode && pressed && { opacity: 0.92 },
                           ]}
                         >
                           {pollParsed ? (
@@ -1056,7 +1723,15 @@ export function InboxScreen() {
                               bubbleTextStyle={styles.bubbleText}
                               bubbleTextColor={t.bubbleText}
                               mediaHintColor={t.mediaHint}
+                              docStripBg={m.sent ? t.docStripOut : t.docStripIn}
+                              docStripBorder={m.sent ? t.docStripBorderOut : t.docStripBorderIn}
                               onOpenMediaPreview={openMediaPreview}
+                              onContactOpenChat={handleContactOpenChat}
+                              onContactSaveToDevice={handleContactSaveToDevice}
+                              contactCardBusyMessageId={contactCardBusyMessageId}
+                              threadContactDisplayName={
+                                selectedChat?.name?.trim() || selectedChat?.phoneNumber || null
+                              }
                             />
                           )}
                           {bubbleCta ? (
@@ -1085,17 +1760,82 @@ export function InboxScreen() {
                               {new Date(m.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </Text>
                             {m.sent ? (
-                              <Text style={[styles.tickSmall, { color: t.tickSmall }]}> {statusTicks(m.status, m.sent)}</Text>
+                              <View style={styles.tickCluster}>
+                                {(() => {
+                                  const r = outboundReceiptIcons(m.status);
+                                  if (r === 'none') return null;
+                                  const read = r === 'read';
+                                  const tint = read ? t.tickSmall : t.timeSmall;
+                                  return (
+                                    <Ionicons
+                                      name={r === 'sent' ? 'checkmark' : 'checkmark-done'}
+                                      size={15}
+                                      color={tint}
+                                      style={styles.tickIon}
+                                    />
+                                  );
+                                })()}
+                              </View>
                             ) : null}
                           </View>
-                        </View>
+                        </Pressable>
                       </View>
                     </View>
                   );
                 }}
               />
-            )}
+              )}
+            </View>
           </ImageBackground>
+
+          {replyToMessage ? (
+            <View
+              style={[
+                styles.replyStripOuter,
+                {
+                  backgroundColor: colorScheme === 'dark' ? 'rgba(30,41,59,0.92)' : '#f9fafb',
+                  borderLeftColor: t.threadCallIcon,
+                },
+              ]}
+            >
+              <View style={styles.replyStripTextWrap}>
+                <Text
+                  style={[
+                    styles.replyStripKicker,
+                    { color: colorScheme === 'dark' ? '#94a3b8' : '#64748b' },
+                  ]}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {replyToMessage.sent
+                    ? 'REPLYING TO YOU'
+                    : `REPLYING TO ${(selectedChat?.name || selectedChat?.phoneNumber || 'CONTACT').toUpperCase()}`}
+                </Text>
+                <Text
+                  style={[
+                    styles.replyStripPreview,
+                    { color: colorScheme === 'dark' ? '#f1f5f9' : '#0f172a' },
+                  ]}
+                  numberOfLines={3}
+                >
+                  {stripHtmlPreview(replyToMessage.text || '')}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => setReplyToMessage(null)}
+                hitSlop={12}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel reply"
+                style={({ pressed }) => [
+                  styles.replyStripClose,
+                  { backgroundColor: colorScheme === 'dark' ? 'rgba(148,163,184,0.15)' : 'rgba(15,23,42,0.06)' },
+                  pressed && { opacity: 0.75 },
+                ]}
+              >
+                <Ionicons name="close" size={20} color={colorScheme === 'dark' ? '#cbd5e1' : '#64748b'} />
+              </Pressable>
+            </View>
+          ) : null}
 
           <View
             style={[
@@ -1275,6 +2015,14 @@ export function InboxScreen() {
           onSendStickerFromLibrary={sendStickerFromLibraryPath}
         />
 
+        <InboxMessageContextMenu
+          visible={!!messageMenuMessage}
+          message={messageMenuMessage}
+          theme={rowMenuTheme}
+          onClose={() => setMessageMenuMessage(null)}
+          onSelect={(action, msg) => onMessageMenuSelect(action, msg)}
+        />
+
         <InboxFullScreenMediaModal
           visible={mediaPreviewVisible}
           request={mediaPreviewRequest}
@@ -1314,11 +2062,19 @@ export function InboxScreen() {
               backgroundColor: t.listBg,
               borderBottomWidth: StyleSheet.hairlineWidth,
               borderBottomColor: t.filterBarBorderBottom,
-              shadowColor: '#000000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: t.filterBarShadowOpacity,
-              shadowRadius: 5,
-              elevation: 4,
+              ...(Platform.OS === 'web'
+                ? {
+                    boxShadow: `0 2px 5px rgba(0,0,0,${String(
+                      Math.min(0.22, Number(t.filterBarShadowOpacity) + 0.04),
+                    )})`,
+                  }
+                : {
+                    shadowColor: '#000000',
+                    shadowOffset: { width: 0, height: 2 },
+                    shadowOpacity: t.filterBarShadowOpacity,
+                    shadowRadius: 5,
+                    elevation: 4,
+                  }),
             },
           ]}
         >
@@ -1411,6 +2167,7 @@ export function InboxScreen() {
         <FlatList
           data={filteredChats}
           keyExtractor={(item) => item.id}
+          extraData={{ sel: selectedChat?.id ?? '', sig: chats.map((c) => `${c.id}:${c.unread}`).join('|') }}
           contentContainerStyle={styles.chatListPad}
           ItemSeparatorComponent={() => (
             <View
@@ -1434,9 +2191,21 @@ export function InboxScreen() {
             const hue = avatarHueFromId(chat.id);
             const initials = avatarInitials(chat.name || chat.phoneNumber);
             const img = mediaUrlFor(chat.profileImage);
+            const effectiveUnread = selectedChat?.id === chat.id ? 0 : (chat.unread ?? 0);
             return (
               <Pressable
-                onPress={() => setSelectedChat(chat)}
+                delayLongPress={500}
+                onLongPress={() => {
+                  suppressChatRowPressRef.current = true;
+                  setListContextMenuChat(chat);
+                }}
+                onPress={() => {
+                  if (suppressChatRowPressRef.current) {
+                    suppressChatRowPressRef.current = false;
+                    return;
+                  }
+                  setSelectedChat({ ...chat, unread: 0 });
+                }}
                 style={({ pressed }) => [
                   styles.chatRow,
                   pressed && { backgroundColor: t.chatRowPressed },
@@ -1458,6 +2227,7 @@ export function InboxScreen() {
                   <View style={styles.chatTitleRow}>
                     <Text style={[styles.chatName, { color: t.rowHi }]} numberOfLines={1}>
                       {chat.isPinned ? '● ' : ''}
+                      {favoriteContactIds.has(chat.id) ? '★ ' : ''}
                       {chat.name}
                     </Text>
                     <Text style={[styles.chatTime, { color: t.rowMuted }]}>{formatChatTime(chat.time)}</Text>
@@ -1467,16 +2237,16 @@ export function InboxScreen() {
                       style={[
                         styles.previewText,
                         { color: t.rowMuted },
-                        (chat.unread ?? 0) > 0 && { color: t.rowHi, fontWeight: '600' as const },
+                        effectiveUnread > 0 && { color: t.rowHi, fontWeight: '600' as const },
                       ]}
                       numberOfLines={1}
                     >
                       {stripHtmlPreview(String(chat.lastMessage ?? ''))}
                     </Text>
-                    {(chat.unread ?? 0) > 0 ? (
+                    {effectiveUnread > 0 ? (
                       <View style={styles.unreadBadge}>
                         <Text style={[styles.unreadBadgeText, { color: t.unreadBadgeText }]}>
-                          {chat.unread > 99 ? '99+' : String(chat.unread)}
+                          {effectiveUnread > 99 ? '99+' : String(effectiveUnread)}
                         </Text>
                       </View>
                     ) : null}
@@ -1531,6 +2301,53 @@ export function InboxScreen() {
             </ScrollView>
             <Pressable style={styles.tagsModalClose} onPress={() => setTagsModalVisible(false)}>
               <Text style={[styles.tagsModalCloseText, { color: t.rowMuted }]}>Close</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      <InboxChatRowContextMenu
+        visible={!!listContextMenuChat}
+        chat={listContextMenuChat}
+        isArchivedMailbox={mailbox === 'archived'}
+        showAssignBranch={showAssignBranchMenu}
+        branches={branchesForAssign}
+        isFavorite={listContextMenuChat ? favoriteContactIds.has(listContextMenuChat.id) : false}
+        theme={rowMenuTheme}
+        onClose={() => setListContextMenuChat(null)}
+        onSelect={(action, chat, extra) => onChatRowContextSelect(action, chat, extra)}
+      />
+
+      <Modal visible={!!tagPickerChat} transparent animationType="fade" onRequestClose={() => setTagPickerChat(null)}>
+        <Pressable style={styles.tagsModalBackdrop} onPress={() => setTagPickerChat(null)}>
+          <Pressable
+            style={[styles.tagsModalSheet, { backgroundColor: t.listBg, borderColor: t.filterBarBorderBottom }]}
+            onPress={() => {}}
+          >
+            <Text style={[styles.tagsModalTitle, { color: t.rowHi }]}>Select tag</Text>
+            <Text style={[styles.tagsModalEmpty, { color: t.rowMuted, paddingBottom: 10 }]} numberOfLines={2}>
+              {tagPickerChat?.name ?? tagPickerChat?.phoneNumber ?? ''}
+            </Text>
+            <Pressable
+              style={({ pressed }) => [styles.tagsModalRow, pressed && { opacity: 0.85 }]}
+              onPress={() => void applyContactTagFromPicker('HOT LEAD')}
+            >
+              <Text style={[styles.tagsModalRowText, { color: '#2563eb' }]}>Hot Lead</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.tagsModalRow, pressed && { opacity: 0.85 }]}
+              onPress={() => void applyContactTagFromPicker('FOLLOW UP')}
+            >
+              <Text style={[styles.tagsModalRowText, { color: '#ca8a04' }]}>Follow Up</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.tagsModalRow, pressed && { opacity: 0.85 }]}
+              onPress={() => void applyContactTagFromPicker('CLOSED')}
+            >
+              <Text style={[styles.tagsModalRowText, { color: '#6b7280' }]}>Closed</Text>
+            </Pressable>
+            <Pressable style={styles.tagsModalClose} onPress={() => setTagPickerChat(null)}>
+              <Text style={[styles.tagsModalCloseText, { color: t.rowMuted }]}>Cancel</Text>
             </Pressable>
           </Pressable>
         </Pressable>
@@ -1756,6 +2573,62 @@ const styles = StyleSheet.create({
     flex: 1,
     width: '100%',
   },
+  threadListWrap: {
+    flex: 1,
+  },
+  msgSelectBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  msgSelectBannerText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    marginRight: 8,
+  },
+  msgSelectBannerDone: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  replyStripOuter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 12,
+    marginBottom: 12,
+    marginTop: 6,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
+    paddingRight: 10,
+    borderRadius: 16,
+    borderLeftWidth: 4,
+    gap: 10,
+  },
+  replyStripTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  replyStripKicker: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.85,
+    marginBottom: 6,
+  },
+  replyStripPreview: {
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '500',
+  },
+  replyStripClose: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   threadMessageList: {
     flex: 1,
     backgroundColor: 'transparent',
@@ -1766,59 +2639,109 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   msgListPad: {
-    paddingHorizontal: 10,
-    paddingVertical: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 10,
   },
   olderPad: { paddingVertical: 12 },
-  dayPillWrap: { alignItems: 'center', marginVertical: 10 },
+  dayPillWrap: { alignItems: 'center', marginVertical: 12 },
   dayPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 24,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.12,
+        shadowRadius: 2,
+      },
+      android: { elevation: 1 },
+      web: { boxShadow: '0 1px 2px rgba(0,0,0,0.12)' },
+      default: {
+        boxShadow: '0 1px 2px rgba(0,0,0,0.12)',
+      } as object,
+    }),
   },
   dayPillText: {
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 12.5,
+    fontWeight: '500',
+    letterSpacing: 0.2,
   },
   bubbleRow: {
-    marginBottom: 6,
     maxWidth: '100%',
+  },
+  bubbleRowLoose: {
+    marginBottom: 10,
+  },
+  bubbleRowGrouped: {
+    marginBottom: 3,
   },
   bubbleRowIn: { alignItems: 'flex-start' },
   bubbleRowOut: { alignItems: 'flex-end' },
   bubble: {
-    maxWidth: '82%',
-    borderRadius: 12,
-    paddingHorizontal: 10,
+    maxWidth: '86%',
+    borderRadius: 14,
+    paddingHorizontal: 9,
     paddingVertical: 6,
+    paddingBottom: 7,
   },
+  /** Subtle lift on light chat wallpaper (WhatsApp-like). */
+  bubbleShadowLight: Platform.select({
+    ios: {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 0.5 },
+      shadowOpacity: 0.07,
+      shadowRadius: 1.5,
+    },
+    android: { elevation: 1 },
+    web: { boxShadow: '0 1px 0.5px rgba(0,0,0,0.08)' },
+    default: {
+      boxShadow: '0 1px 0.5px rgba(0,0,0,0.08)',
+    } as object,
+  }),
+  /** Corner “tail”: sharp near bottom outer edge like WhatsApp. */
   bubbleIn: {
-    borderTopLeftRadius: 4,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+    borderBottomRightRadius: 14,
+    borderBottomLeftRadius: 4,
   },
   bubbleOut: {
-    borderTopRightRadius: 4,
+    borderTopLeftRadius: 14,
+    borderTopRightRadius: 14,
+    borderBottomLeftRadius: 14,
+    borderBottomRightRadius: 4,
   },
   bubbleText: {
-    fontSize: 15,
-    lineHeight: 20,
+    fontSize: 14.5,
+    lineHeight: 19.5,
+    letterSpacing: 0.15,
   },
   metaRow: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-    alignItems: 'center',
-    marginTop: 2,
+    alignItems: 'flex-end',
+    marginTop: 3,
+    gap: 4,
   },
   timeSmall: {
     fontSize: 11,
+    marginTop: 1,
+    letterSpacing: 0.1,
   },
-  tickSmall: {
-    fontSize: 11,
+  tickCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Platform.OS === 'ios' ? 0 : -1,
+  },
+  tickIon: {
+    marginLeft: -2,
   },
   bubbleDivider: {
     height: StyleSheet.hairlineWidth,
     marginTop: 8,
     marginBottom: 2,
-    marginHorizontal: -10,
+    marginHorizontal: -9,
   },
   bubbleCtaRow: {
     flexDirection: 'row',
@@ -1827,8 +2750,8 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingTop: 6,
     paddingBottom: 2,
-    marginHorizontal: -10,
-    paddingHorizontal: 10,
+    marginHorizontal: -9,
+    paddingHorizontal: 9,
   },
   bubbleCtaLabel: {
     fontSize: 15,
@@ -1843,7 +2766,7 @@ const styles = StyleSheet.create({
   },
   pollOptionRow: {
     borderWidth: StyleSheet.hairlineWidth,
-    borderRadius: 14,
+    borderRadius: 10,
     paddingVertical: 10,
     paddingHorizontal: 12,
   },
@@ -1936,6 +2859,7 @@ const styles = StyleSheet.create({
         shadowRadius: 4,
       },
       android: { elevation: 3 },
+      web: { boxShadow: '0 2px 6px rgba(37,211,102,0.28)' },
       default: {},
     }),
   },

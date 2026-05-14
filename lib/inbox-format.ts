@@ -96,6 +96,22 @@ export function splitTextWithUrls(plain: string): { kind: 'text' | 'url'; value:
   return parts.length ? parts : [{ kind: 'text', value: text }];
 }
 
+/** First `max` distinct http(s) URLs in plain text (same regex as {@link splitTextWithUrls}). */
+export function extractDistinctHttpUrls(plain: string, max = 1): string[] {
+  const re = /https?:\/\/[^\s<>"']+/gi;
+  const seen = new Set<string>();
+  const list: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(plain)) !== null) {
+    const u = trimUrlTrailingJunk(m[0]);
+    if (seen.has(u)) continue;
+    seen.add(u);
+    list.push(u);
+    if (list.length >= max) break;
+  }
+  return list;
+}
+
 const AVATAR_HUES = [142, 199, 280, 32, 210, 170, 340, 55];
 
 export function avatarHueFromId(id: string): number {

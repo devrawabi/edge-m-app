@@ -49,6 +49,11 @@ export type InboxUiTheme = {
   /** Under filter strip (with shadow) */
   filterBarBorderBottom: string;
   filterBarShadowOpacity: number;
+  /** Attachment row inside incoming / outgoing bubbles (WhatsApp-style doc strip). */
+  docStripIn: string;
+  docStripOut: string;
+  docStripBorderIn: string;
+  docStripBorderOut: string;
   /** Web inbox–style thread composer: outer strip (`bg-white border-t border-gray-100`). */
   composerStripBg: string;
   composerStripBorderTop: string;
@@ -92,6 +97,10 @@ export function getInboxUiTheme(isDark: boolean): InboxUiTheme {
       olderLoadingDot: '#94a3b8',
       dayPillBg: 'rgba(255,255,255,0.1)',
       dayPillText: '#aebac1',
+      docStripIn: 'rgba(0,0,0,0.28)',
+      docStripOut: 'rgba(255,255,255,0.14)',
+      docStripBorderIn: 'rgba(255,255,255,0.06)',
+      docStripBorderOut: 'rgba(255,255,255,0.12)',
       bubbleIn: '#2a3942',
       bubbleOut: '#005c4b',
       bubbleText: '#e9edef',
@@ -151,6 +160,10 @@ export function getInboxUiTheme(isDark: boolean): InboxUiTheme {
     olderLoadingDot: '#54656f',
     dayPillBg: 'rgba(0,0,0,0.06)',
     dayPillText: '#54656f',
+    docStripIn: '#f5f6f6',
+    docStripOut: 'rgba(255,255,255,0.72)',
+    docStripBorderIn: '#e9edef',
+    docStripBorderOut: 'rgba(17,27,33,0.08)',
     bubbleIn: '#ffffff',
     bubbleOut: '#d9fdd3',
     bubbleText: '#111b21',

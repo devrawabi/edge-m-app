@@ -8,8 +8,14 @@ import { Platform } from 'react-native';
 
 import { getApiBaseUrl, requireApiBaseUrl } from '@/constants/Config';
 import { augmentAxiosNetworkError } from '@/lib/network-errors';
-import { mergeSetCookieIntoJar } from '@/lib/merge-set-cookie';
-import { getCookieJar, initSessionJar, persistJar } from '@/lib/session-store';
+import { mergeSetCookieIntoJar, rawSetCookieLines } from '@/lib/merge-set-cookie';
+import {
+  buildCookieHeaderFromMemory,
+  cookieJarsEqual,
+  getCookieJar,
+  initSessionJar,
+  persistJar,
+} from '@/lib/session-store';
 
 let singleton: AxiosInstance | null = null;
 
@@ -42,11 +48,7 @@ function createInstance(): AxiosInstance {
       return config;
     }
     await initSessionJar();
-    const jar = await getCookieJar();
-    const segments = Object.entries(jar)
-      .map(([k, v]) => `${k}=${v}`)
-      .join('; ')
-      .trim();
+    const segments = buildCookieHeaderFromMemory();
     const headers = AxiosHeaders.from(config.headers ?? {});
     if (segments) headers.set('Cookie', segments);
     config.headers = headers;
@@ -80,10 +82,16 @@ function createInstance(): AxiosInstance {
       flat = flattenResponseHeaders(hdrs as unknown as Record<string, unknown>);
     }
 
-    await initSessionJar();
-    let jar = await getCookieJar();
-    jar = mergeSetCookieIntoJar(jar, flat);
-    await persistJar(jar);
+    if (rawSetCookieLines(flat).length === 0) {
+      return response;
+    }
+
+    const snapshot = await getCookieJar();
+    const merged = mergeSetCookieIntoJar(snapshot, flat);
+    if (cookieJarsEqual(snapshot, merged)) {
+      return response;
+    }
+    await persistJar(merged);
     return response;
   });
 
