@@ -378,7 +378,7 @@ export function InboxBubbleRichContent({
         contactName: finalName,
         phoneNumber: finalPhone,
         status: 'ringing' as const,
-        contactId: m.contactId ? String(m.contactId) : undefined,
+        contactId: (m as any).contactId ? String((m as any).contactId) : undefined,
         timestamp: Date.now(),
       };
       showIncomingCallScreen(payload);

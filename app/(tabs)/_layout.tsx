@@ -1,76 +1,49 @@
 import { Ionicons } from '@expo/vector-icons';
-import { Redirect, Tabs, useRouter, type Href } from 'expo-router';
+import { Redirect, Tabs } from 'expo-router';
 import React from 'react';
-import {
-  ActivityIndicator,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, View } from 'react-native';
 
 import { WhatsAppIncomingCallHost } from '@/components/WhatsAppIncomingCallHost';
-import { ThemeSwitcherHeaderButton } from '@/components/ThemeSwitcherHeaderButton';
-import { useClientOnlyValue } from '@/components/useClientOnlyValue';
-import { useColorScheme } from '@/components/useColorScheme';
-import Colors from '@/constants/Colors';
 import { useSessionContext } from '@/context/SessionContext';
-import { nudgeInboxHeader } from '@/lib/inbox-header-nudge';
+import { useAppColorScheme } from '@/context/ThemePreferenceContext';
 
-function IonTabIcon({ name, color }: { name: keyof typeof Ionicons.glyphMap; color: string }) {
-  return <Ionicons name={name} size={26} style={{ marginBottom: -4 }} color={color} />;
+function TabIcon({
+  name,
+  color,
+  focused,
+}: {
+  name: keyof typeof Ionicons.glyphMap;
+  color: string;
+  focused: boolean;
+}) {
+  return (
+    <Ionicons
+      name={focused ? name.replace('-outline', '') as keyof typeof Ionicons.glyphMap : name}
+      size={24}
+      color={color}
+    />
+  );
 }
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
+  const colorScheme = useAppColorScheme();
   const isDark = colorScheme === 'dark';
-  const headerBg = isDark ? '#0f172a' : '#ffffff';
-  const headerFg = isDark ? '#f8fafc' : '#0f172a';
-  const tabBarBg = isDark ? '#0f172a' : '#f8fafc';
-  const tabBarBorder = isDark ? '#1e293b' : '#e2e8f0';
-  const sidebarBg = isDark ? '#0f172a' : '#ffffff';
-  const sidebarBorder = isDark ? '#1e293b' : '#e2e8f0';
-  const sidebarFg = headerFg;
-  const backdropTint = isDark ? 'rgba(2, 6, 23, 0.5)' : 'rgba(15, 23, 42, 0.28)';
-  const sidebarItemPressed = isDark ? 'rgba(255,255,255,0.08)' : '#e2e8f0';
-  const headerShown = useClientOnlyValue(false, Platform.OS !== 'android');
   const session = useSessionContext();
-  const router = useRouter();
-  const [sidebarVisible, setSidebarVisible] = React.useState(false);
-  const logoutFg = isDark ? '#f87171' : '#dc2626';
 
-  const onLogout = React.useCallback(() => {
-    setSidebarVisible(false);
-    void (async () => {
-      await session.signOutLocal();
-      router.replace('/login');
-    })();
-  }, [router, session]);
-
-  /** Paths omit the `(tabs)` group — same URLs as `<Redirect href="/" />` after login. */
-  const toolItems: { route: Href; title: string; icon: keyof typeof Ionicons.glyphMap }[] = [
-    { route: '/', title: 'Dashboard', icon: 'pulse-outline' },
-    { route: '/inbox', title: 'Inbox', icon: 'chatbubbles-outline' },
-    { route: '/contacts', title: 'Contacts', icon: 'people-outline' },
-    { route: '/campaigns', title: 'Campaigns', icon: 'megaphone-outline' },
-    { route: '/catalog', title: 'Catalog', icon: 'cube-outline' },
-    { route: '/flows', title: 'Flows', icon: 'git-network-outline' },
-    { route: '/automation', title: 'Automation', icon: 'hardware-chip-outline' },
-    { route: '/templates', title: 'Templates', icon: 'documents-outline' },
-    { route: '/insights', title: 'Insights', icon: 'analytics-outline' },
-    { route: '/activity-log', title: 'Activity', icon: 'clipboard-outline' },
-    { route: '/settings', title: 'Settings', icon: 'settings-outline' },
-    { route: '/admin', title: 'Admin', icon: 'shield-outline' },
-  ];
+  const activeColor = '#00a884';
+  const inactiveColor = isDark ? '#8696a0' : '#667781';
+  const tabBarBg = isDark ? '#111b21' : '#ffffff';
+  const tabBarBorder = isDark ? '#2a3942' : '#e2e8f0';
 
   if (session.status === 'loading') {
     return (
-      <View style={[guardStyles.flex, { backgroundColor: isDark ? '#0b141a' : '#f8fafc' }]}>
-        <ActivityIndicator size="large" color="#25D366" />
+      <View
+        style={[
+          guardStyles.center,
+          { backgroundColor: isDark ? '#0b141a' : '#f8fafc' },
+        ]}
+      >
+        <ActivityIndicator size="large" color="#00a884" />
       </View>
     );
   }
@@ -84,278 +57,97 @@ export default function TabLayout() {
       <WhatsAppIncomingCallHost />
       <Tabs
         screenOptions={{
-          tabBarActiveTintColor: Colors[colorScheme].tint,
-          tabBarInactiveTintColor: '#64748b',
-          tabBarLabelStyle: { fontSize: 10, maxWidth: 72 },
-          tabBarItemStyle: { paddingHorizontal: 2 },
+          headerShown: false,
+          tabBarActiveTintColor: activeColor,
+          tabBarInactiveTintColor: inactiveColor,
+          tabBarHideOnKeyboard: true,
           tabBarStyle: {
             backgroundColor: tabBarBg,
             borderTopColor: tabBarBorder,
+            borderTopWidth: StyleSheet.hairlineWidth,
+            height: Platform.OS === 'ios' ? 82 : 60,
+            paddingBottom: Platform.OS === 'ios' ? 22 : 8,
+            paddingTop: 8,
+            elevation: 8,
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: -1 },
+            shadowOpacity: 0.08,
+            shadowRadius: 4,
           },
-          headerStyle: {
-            backgroundColor: headerBg,
-            borderBottomWidth: 0,
-            ...(Platform.OS === 'web'
-              ? { boxShadow: 'none' }
-              : {
-                  elevation: 0,
-                  shadowOpacity: 0,
-                  shadowOffset: { width: 0, height: 0 },
-                }),
+          tabBarLabelStyle: {
+            fontSize: 10.5,
+            fontWeight: '500',
+            letterSpacing: 0.1,
+            marginTop: 2,
           },
-          headerTitleStyle: { color: headerFg },
-          headerTintColor: headerFg,
-          tabBarHideOnKeyboard: true,
-          headerShown,
-          headerLeft: () => (
-            <TouchableOpacity
-              style={styles.menuButton}
-              onPress={() => setSidebarVisible(true)}
-              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            >
-              <Ionicons name="menu-outline" size={22} color={headerFg} />
-            </TouchableOpacity>
-          ),
+          tabBarItemStyle: {
+            paddingVertical: 0,
+          },
         }}
       >
+        {/* ── Visible Tabs (WA Business order) ── */}
         <Tabs.Screen
           name="index"
           options={{
-            title: 'Dashboard',
-            tabBarIcon: ({ color }) => <IonTabIcon name="pulse-outline" color={color} />,
-            headerRight: () => <ThemeSwitcherHeaderButton tintColor={headerFg} />,
+            title: 'Chats',
+            tabBarIcon: ({ color, focused }) => (
+              <TabIcon name="chatbubble-ellipses-outline" color={color} focused={focused} />
+            ),
           }}
         />
         <Tabs.Screen
-          name="inbox"
+          name="updates"
           options={{
-            title: 'Inbox',
-            /** Inbox sets its own title via `setOptions`; header must be visible on Android too (tabs default hides it). */
-            headerShown: true,
-            /** Full-height inbox (thread + composer); hide tab bar like a dedicated chat screen. */
-            tabBarStyle: { display: 'none', height: 0 },
-            tabBarIcon: ({ color }) => <IonTabIcon name="chatbubbles-outline" color={color} />,
+            title: 'Updates',
+            tabBarIcon: ({ color, focused }) => (
+              <TabIcon name="sync-circle-outline" color={color} focused={focused} />
+            ),
           }}
         />
         <Tabs.Screen
-          name="contacts"
+          name="tools"
           options={{
-            title: 'Contacts',
-            tabBarIcon: ({ color }) => <IonTabIcon name="people-outline" color={color} />,
+            title: 'Tools',
+            tabBarIcon: ({ color, focused }) => (
+              <TabIcon name="briefcase-outline" color={color} focused={focused} />
+            ),
           }}
         />
         <Tabs.Screen
-          name="campaigns"
+          name="calls"
           options={{
-            href: null,
-            title: 'Campaigns',
-            tabBarIcon: ({ color }) => <IonTabIcon name="megaphone-outline" color={color} />,
-          }}
-        />
-        <Tabs.Screen
-          name="catalog"
-          options={{
-            href: null,
-            title: 'Catalog',
-            tabBarIcon: ({ color }) => <IonTabIcon name="cube-outline" color={color} />,
-          }}
-        />
-        <Tabs.Screen
-          name="flows"
-          options={{
-            href: null,
-            title: 'Flows',
-            tabBarIcon: ({ color }) => <IonTabIcon name="git-network-outline" color={color} />,
-          }}
-        />
-        <Tabs.Screen
-          name="automation"
-          options={{
-            href: null,
-            title: 'Automation',
-            tabBarIcon: ({ color }) => <IonTabIcon name="hardware-chip-outline" color={color} />,
-          }}
-        />
-        <Tabs.Screen
-          name="templates"
-          options={{
-            href: null,
-            title: 'Templates',
-            tabBarIcon: ({ color }) => <IonTabIcon name="documents-outline" color={color} />,
-          }}
-        />
-        <Tabs.Screen
-          name="insights"
-          options={{
-            href: null,
-            title: 'Insights',
-            tabBarIcon: ({ color }) => <IonTabIcon name="analytics-outline" color={color} />,
-          }}
-        />
-        <Tabs.Screen
-          name="activity-log"
-          options={{
-            href: null,
-            title: 'Activity',
-            tabBarIcon: ({ color }) => <IonTabIcon name="clipboard-outline" color={color} />,
+            title: 'Calls',
+            tabBarIcon: ({ color, focused }) => (
+              <TabIcon name="call-outline" color={color} focused={focused} />
+            ),
           }}
         />
         <Tabs.Screen
           name="settings"
           options={{
-            href: null,
             title: 'Settings',
-            tabBarIcon: ({ color }) => <IonTabIcon name="settings-outline" color={color} />,
+            tabBarIcon: ({ color, focused }) => (
+              <TabIcon name="settings-outline" color={color} focused={focused} />
+            ),
           }}
         />
-        <Tabs.Screen
-          name="admin"
-          options={{
-            href: null,
-            title: 'Admin',
-            tabBarIcon: ({ color }) => <IonTabIcon name="shield-outline" color={color} />,
-          }}
-        />
+
+        {/* ── Hidden Screens ── */}
+        <Tabs.Screen name="inbox"         options={{ href: null }} />
+        <Tabs.Screen name="contacts"      options={{ href: null }} />
+        <Tabs.Screen name="campaigns"     options={{ href: null }} />
+        <Tabs.Screen name="catalog"       options={{ href: null }} />
+        <Tabs.Screen name="flows"         options={{ href: null }} />
+        <Tabs.Screen name="automation"    options={{ href: null }} />
+        <Tabs.Screen name="templates"     options={{ href: null }} />
+        <Tabs.Screen name="insights"      options={{ href: null }} />
+        <Tabs.Screen name="activity-log"  options={{ href: null }} />
+        <Tabs.Screen name="admin"         options={{ href: null }} />
       </Tabs>
-
-      <Modal
-        animationType="fade"
-        transparent
-        visible={sidebarVisible}
-        onRequestClose={() => setSidebarVisible(false)}
-      >
-        <Pressable style={[styles.backdrop, { backgroundColor: backdropTint }]} onPress={() => setSidebarVisible(false)}>
-          <Pressable
-            style={[
-              styles.sidebar,
-              {
-                backgroundColor: sidebarBg,
-                borderRightColor: sidebarBorder,
-              },
-            ]}
-            onPress={() => {}}
-          >
-            <View style={styles.sidebarHeader}>
-              <Text style={[styles.sidebarTitle, { color: sidebarFg }]}>All Tools</Text>
-              <TouchableOpacity onPress={() => setSidebarVisible(false)} style={styles.closeButton}>
-                <Ionicons name="close-outline" size={24} color={sidebarFg} />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              style={styles.sidebarScroll}
-              contentContainerStyle={styles.sidebarList}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              {toolItems.map((item) => (
-                <Pressable
-                  key={item.title}
-                  style={({ pressed }) => [
-                    styles.sidebarItem,
-                    pressed && { backgroundColor: sidebarItemPressed },
-                  ]}
-                  onPress={() => {
-                    setSidebarVisible(false);
-                    router.push(item.route);
-                    if (item.route === '/inbox') {
-                      queueMicrotask(() => nudgeInboxHeader());
-                    }
-                  }}
-                >
-                  <Ionicons name={item.icon} size={18} color={sidebarFg} />
-                  <Text style={[styles.sidebarItemText, { color: sidebarFg }]}>{item.title}</Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Log out"
-              style={({ pressed }) => [
-                styles.sidebarLogout,
-                pressed && { backgroundColor: sidebarItemPressed },
-              ]}
-              onPress={onLogout}
-            >
-              <Ionicons name="log-out-outline" size={18} color={logoutFg} />
-              <Text style={[styles.sidebarLogoutText, { color: logoutFg }]}>Log out</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </>
   );
 }
 
 const guardStyles = StyleSheet.create({
-  flex: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-});
-
-const styles = StyleSheet.create({
-  menuButton: {
-    marginLeft: 12,
-    padding: 2,
-  },
-  backdrop: {
-    flex: 1,
-    flexDirection: 'row',
-  },
-  sidebar: {
-    width: 290,
-    height: '100%',
-    borderRightWidth: 1,
-    paddingTop: 56,
-    paddingHorizontal: 14,
-    paddingBottom: 24,
-    flexDirection: 'column',
-  },
-  sidebarScroll: {
-    flex: 1,
-    minHeight: 0,
-  },
-  sidebarHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 14,
-  },
-  sidebarTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  closeButton: {
-    padding: 2,
-  },
-  sidebarList: {
-    gap: 4,
-    paddingBottom: 8,
-  },
-  sidebarLogout: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    marginTop: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: 'rgba(148, 163, 184, 0.35)',
-  },
-  sidebarLogoutText: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  sidebarItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-  },
-  sidebarItemText: {
-    fontSize: 14,
-    fontWeight: '500',
-  },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 });

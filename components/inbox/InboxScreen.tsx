@@ -55,6 +55,7 @@ import { emitSubscribeChat, getActiveSocket } from '@/lib/socketClient';
 import { useInboxLivePolling } from '@/hooks/useInboxLivePolling';
 import type { InboxChat, InboxListResponse, InboxMessage, MessagesPageResponse } from '@/types/inbox';
 import type { InboxMediaPreviewRequest } from '@/types/inbox-media-preview';
+import { checkAndRequestMicPermission, startOutgoingCall } from '@/components/WhatsAppIncomingCallHost';
 
 type ListFilter = 'all' | 'unread' | 'flagged';
 type Mailbox = 'active' | 'archived';
@@ -1399,14 +1400,20 @@ export function InboxScreen() {
     setAttachSheetVisible(true);
   }, []);
 
-  const openDialer = useCallback((phone: string) => {
+  const openDialer = useCallback(async (phone: string) => {
     const digits = phone.replace(/\D/g, '');
     if (!digits) {
       Alert.alert('Call', 'No phone number on this contact.');
       return;
     }
-    void Linking.openURL(`tel:${digits}`);
-  }, []);
+
+    const hasPermission = await checkAndRequestMicPermission();
+    if (hasPermission && selectedChat) {
+      startOutgoingCall(selectedChat.id, selectedChat.name, selectedChat.phoneNumber);
+    } else {
+      void Linking.openURL(`tel:${digits}`);
+    }
+  }, [selectedChat]);
 
   const handleContactOpenChat = useCallback(async (p: ContactCardActionPayload) => {
     setContactCardBusyMessageId(p.messageId);
@@ -1487,6 +1494,27 @@ export function InboxScreen() {
   }, []);
 
   const navigation = useNavigation();
+
+  useEffect(() => {
+    const parent = navigation.getParent();
+    if (!parent) return;
+    if (selectedChat) {
+      parent.setOptions({
+        tabBarStyle: { display: 'none' },
+      });
+    } else {
+      parent.setOptions({
+        tabBarStyle: {
+          backgroundColor: colorScheme === 'dark' ? '#0f172a' : '#f8fafc',
+          borderTopColor: colorScheme === 'dark' ? '#1e293b' : '#e2e8f0',
+          display: 'flex',
+          height: 60,
+          paddingBottom: 8,
+          paddingTop: 8,
+        },
+      });
+    }
+  }, [navigation, selectedChat, colorScheme]);
 
   const resetInboxRouteHeader = useCallback(() => {
     navigation.setOptions({
@@ -2177,7 +2205,7 @@ export function InboxScreen() {
         <FlatList
           data={filteredChats}
           keyExtractor={(item) => item.id}
-          extraData={{ sel: selectedChat?.id ?? '', sig: chats.map((c) => `${c.id}:${c.unread}`).join('|') }}
+          extraData={{ sel: (selectedChat as any)?.id ?? '', sig: chats.map((c) => `${c.id}:${c.unread}`).join('|') }}
           contentContainerStyle={styles.chatListPad}
           ItemSeparatorComponent={() => (
             <View
@@ -2201,7 +2229,7 @@ export function InboxScreen() {
             const hue = avatarHueFromId(chat.id);
             const initials = avatarInitials(chat.name || chat.phoneNumber);
             const img = mediaUrlFor(chat.profileImage);
-            const effectiveUnread = selectedChat?.id === chat.id ? 0 : (chat.unread ?? 0);
+            const effectiveUnread = (selectedChat as any)?.id === chat.id ? 0 : (chat.unread ?? 0);
             return (
               <Pressable
                 delayLongPress={500}
@@ -2850,7 +2878,7 @@ const styles = StyleSheet.create({
       ? ({
           outlineStyle: 'none',
           boxSizing: 'border-box',
-        } as const)
+        } as any)
       : {}),
   },
   composerSendOuter: {

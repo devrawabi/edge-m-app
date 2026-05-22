@@ -279,7 +279,7 @@ function formatWhatsAppRichChildren(
   return nodes;
 }
 
-const baseText: StyleProp<TextStyle> = {
+const baseText: any = {
   fontSize: 15,
   lineHeight: 20,
   fontWeight: '400',
@@ -302,9 +302,9 @@ type Props = {
 export function LinkifiedWhatsAppBubbleText({ messageId, rawHtml, sent, palette, style }: Props) {
   const tone: WhatsAppBubbleTone = sent ? 'outgoing' : 'incoming';
   const plain = stripHtmlForMessageBody(rawHtml || '');
-  const pieces = splitTextWithUrls(plain);
+  const pieces = splitTextWithUrls(plain) as any;
 
-  const children = pieces.flatMap((seg, i) => {
+  const children = pieces.flatMap((seg: any, i: number) => {
     if (seg.kind === 'url') {
       return [
         <Text
@@ -324,7 +324,7 @@ export function LinkifiedWhatsAppBubbleText({ messageId, rawHtml, sent, palette,
       ];
     }
     return formatWhatsAppRichChildren(seg.value, `${messageId}-t-${i}`, palette, tone);
-  });
+  }) as any;
 
   return (
     <Text style={[baseText, { color: palette.base }, style]} selectable>

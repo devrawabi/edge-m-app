@@ -156,7 +156,7 @@ function ZoomablePreviewImageWeb({ uri }: WebZoomProps) {
     };
   }, [clamp, uri]);
 
-  const webShellProps: React.HTMLAttributes<HTMLDivElement> = {
+  const webShellProps: any = {
     ref: shellRef as React.Ref<HTMLDivElement>,
     style: {
       flex: 1,
